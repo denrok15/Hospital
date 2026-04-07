@@ -1,0 +1,9 @@
+export { AuthPage } from "./AuthPage";
+export { ProfilePage } from "./ProfilePage";
+export { RegistrationPage } from "./RegistrationPage";
+export { PatientPage } from "./PatientPage";
+export { PatientCardPage } from "./PatientCardPage";
+export { DetailInspectionPage } from "./DetailInspectionPage";
+export { CreateInspectionPage } from "./CreateInspectionPage";
+export { ConsultationPage } from "./ConsultationPage";
+export { ReportsPage } from "./ReportsPage";
