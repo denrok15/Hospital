@@ -131,7 +131,9 @@ export const ProfilePage = () => {
         gender: formData.gender,
         phone: formData.phone,
       });
-      await queryClient.invalidateQueries(profileKeyFactory.loadProfileData());
+      await queryClient.invalidateQueries({
+        queryKey: profileKeyFactory.loadProfileData(),
+      });
       showToast("Профиль успешно обновлен", "success");
     } catch (error) {
       console.error(error);
