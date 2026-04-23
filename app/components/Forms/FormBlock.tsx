@@ -4,6 +4,7 @@ import {
   type UseFormRegister,
   type Path,
   type FieldValues,
+  type RegisterOptions,
 } from "react-hook-form";
 
 export interface FormField<TFormValues extends FieldValues> {
@@ -13,6 +14,11 @@ export interface FormField<TFormValues extends FieldValues> {
   type?: string;
   wrapperClassName?: string;
   options?: Array<{ value: string; label: string }>;
+  registerOptions?: RegisterOptions<TFormValues, Path<TFormValues>>;
+  formatValue?: (value: string) => string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  autoComplete?: React.InputHTMLAttributes<HTMLInputElement>["autoComplete"];
+  maxLength?: number;
 }
 
 interface FormBlockProps<TFormValues extends FieldValues> {
@@ -58,50 +64,68 @@ export const FormBlock = <TFormValues extends FieldValues>({
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <div className={fieldsClassName ?? "space-y-5"}>
-          {fields.map((field) => (
-            <div
-              key={field.name}
-              className={`relative ${field.wrapperClassName ?? ""}`.trim()}
-            >
-            {field.label && (
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                {field.label}
-              </label>
-            )}
+          {fields.map((field) => {
+            const reg = register(field.name, field.registerOptions);
+            const errorMessage = errors[field.name]?.message;
 
-            {field.type === "select" ? (
-              <select
-                {...register(field.name)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg
+            return (
+              <div
+                key={field.name}
+                className={`relative ${field.wrapperClassName ?? ""}`.trim()}
+              >
+                {field.label && (
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {field.label}
+                  </label>
+                )}
+
+                {field.type === "select" ? (
+                  <select
+                    {...reg}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg
                            focus:outline-none focus:ring-2 focus:ring-indigo-400
                            focus:border-indigo-400 transition duration-200 bg-gray-50
                            text-gray-800"
-              >
-                {(field.options ?? []).map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type={field.type ?? "text"}
-                placeholder={field.placeholder}
-                {...register(field.name)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg 
+                  >
+                    {(field.options ?? []).map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type={field.type ?? "text"}
+                    placeholder={field.placeholder}
+                    name={reg.name}
+                    ref={reg.ref}
+                    onBlur={reg.onBlur}
+                    onChange={(e) => {
+                      if (field.formatValue) {
+                        e.currentTarget.value = field.formatValue(
+                          e.currentTarget.value,
+                        );
+                      }
+                      reg.onChange(e);
+                    }}
+                    inputMode={field.inputMode}
+                    autoComplete={field.autoComplete}
+                    maxLength={field.maxLength}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg 
                            focus:outline-none focus:ring-2 focus:ring-indigo-400 
                            focus:border-indigo-400 transition duration-200 bg-gray-50
                            placeholder-gray-400 text-gray-800"
-              />
-            )}
+                  />
+                )}
 
-            {errors[field.name] && (
-              <p className="text-red-500 text-xs mt-1">
-                {String(errors[field.name]?.message)}
-              </p>
-            )}
-          </div>
-          ))}
+                {errorMessage && (
+                  <p className="text-red-500 text-xs mt-1">
+                    {String(errorMessage)}
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         <button

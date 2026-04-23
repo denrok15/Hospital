@@ -1,35 +1,33 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { loadConsultations, loadInspectionChain } from "app/api/consultations";
+import { loadIcdRoots } from "app/api/patients";
+import type {
+  ConsultationInspection,
+  ConsultationQuery,
+  ConsultationsResponse,
+  IcdRoot,
+} from "app/shared";
+import { DEFAULT_PAGE, DEFAULT_SIZE, SIZE_OPTIONS } from "app/shared/consts";
 import {
-  loadConsultations,
-  type ConsultationInspection,
-  type ConsultationQuery,
-  type ConsultationsResponse,
-} from "app/api/consultations";
-import { loadIcdRoots, type IcdRoot } from "app/api/patients";
+  formatDate,
+  getConclusionLabel,
+  normalizeConsultations,
+  normalizeIcdRoots,
+} from "app/utils";
+import { SearchIcon } from "app/components/icons";
 
-const DEFAULT_PAGE = 1;
-const DEFAULT_SIZE = 5;
-const SIZE_OPTIONS = Array.from({ length: 10 }, (_, index) => index + 1);
+const getIcdRootLabel = (root: IcdRoot) =>
+  [root.code, root.name].filter(Boolean).join(" - ") || root.id;
 
-const formatDate = (value?: string) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString("ru-RU");
-};
-
-const normalizeConsultations = (
-  data: ConsultationInspection[] | ConsultationsResponse | undefined,
-) => {
-  if (!data) return [] as ConsultationInspection[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.inspections)) return data.inspections;
-  if (Array.isArray(data.records)) return data.records;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as ConsultationInspection[];
+const sortIcdRootsByLabel = (roots: IcdRoot[]) => {
+  return [...roots].sort((a, b) =>
+    getIcdRootLabel(a).localeCompare(getIcdRootLabel(b), "en", {
+      numeric: true,
+      sensitivity: "base",
+    }),
+  );
 };
 
 const extractTotalCount = (
@@ -39,10 +37,8 @@ const extractTotalCount = (
   const candidates = [
     data.totalCount,
     data.total,
-    data.count,
     data.pagination?.totalCount,
     data.pagination?.total,
-    data.pagination?.count,
   ];
   for (const candidate of candidates) {
     if (typeof candidate === "number" && Number.isFinite(candidate)) {
@@ -52,37 +48,178 @@ const extractTotalCount = (
   return null;
 };
 
-const normalizeIcdRoots = (
-  data:
-    | IcdRoot[]
-    | {
-        items?: IcdRoot[];
-        data?: IcdRoot[];
-        icdRoots?: IcdRoot[];
-        roots?: IcdRoot[];
-      }
-    | undefined,
+const extractTotalPages = (
+  data: ConsultationInspection[] | ConsultationsResponse | undefined,
 ) => {
-  if (!data) return [] as IcdRoot[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.icdRoots)) return data.icdRoots;
-  if (Array.isArray(data.roots)) return data.roots;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as IcdRoot[];
+  if (!data || Array.isArray(data)) return null;
+  const candidate = data.pagination?.count;
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) return null;
+  if (candidate <= 0) return null;
+  return Math.max(1, Math.trunc(candidate));
 };
 
-const getConclusionLabel = (value?: string) => {
-  if (!value) return "-";
-  if (value === "Disease") return "Болезнь";
-  if (value === "Recovery") return "Выздоровление";
-  if (value === "Death") return "Смерть";
-  return value;
+const buildChildrenByParentId = (
+  rootId: string,
+  items: ConsultationInspection[],
+) => {
+  const map = new Map<string, ConsultationInspection[]>();
+
+  items.forEach((item) => {
+    if (item.id === rootId) return;
+    const parentId =
+      item.previousId && item.previousId !== item.id ? item.previousId : rootId;
+    const bucket = map.get(parentId) ?? [];
+    bucket.push(item);
+    map.set(parentId, bucket);
+  });
+
+  map.forEach((bucket) => {
+    bucket.sort((a, b) => {
+      const dateDelta = new Date(a.date).getTime() - new Date(b.date).getTime();
+      if (Number.isFinite(dateDelta) && dateDelta !== 0) return dateDelta;
+      if (a.createTime && b.createTime) {
+        const ctDelta =
+          new Date(a.createTime).getTime() - new Date(b.createTime).getTime();
+        if (Number.isFinite(ctDelta) && ctDelta !== 0) return ctDelta;
+      }
+      return a.id.localeCompare(b.id);
+    });
+  });
+
+  return map;
+};
+
+const ConsultationCard = ({
+  inspection,
+  grouped,
+  expandedInspectionIds,
+  setExpandedInspectionIds,
+  childrenByParentId,
+  chainStatus = "idle",
+  onToggleExpand,
+  depth = 0,
+}: {
+  inspection: ConsultationInspection;
+  grouped: boolean;
+  expandedInspectionIds: string[];
+  setExpandedInspectionIds: React.Dispatch<React.SetStateAction<string[]>>;
+  childrenByParentId?: Map<string, ConsultationInspection[]>;
+  chainStatus?: "idle" | "loading" | "success" | "error";
+  onToggleExpand?: () => void;
+  depth?: number;
+}) => {
+  const hasChildren = (childrenByParentId?.get(inspection.id)?.length ?? 0) > 0;
+  const canExpand =
+    grouped &&
+    (hasChildren || Boolean(inspection.hasChain || inspection.hasNested));
+  const isExpanded = expandedInspectionIds.includes(inspection.id);
+
+  const directChildren = useMemo(() => {
+    if (!canExpand || !isExpanded) return [];
+    if (!childrenByParentId) return [];
+    return childrenByParentId.get(inspection.id) ?? [];
+  }, [canExpand, childrenByParentId, inspection.id, isExpanded]);
+
+  const marginLeft = Math.min(depth, 2) * 24;
+
+  return (
+    <div style={depth ? { marginLeft } : undefined} className="w-full">
+      <article className="w-full rounded-xl border border-violet-100 bg-[#fefcff] p-4 shadow-sm transition hover:bg-orange-100">
+        <div className="space-y-3 text-sm text-gray-600">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              {canExpand && (
+                <button
+                  type="button"
+                  onClick={
+                    onToggleExpand ??
+                    (() =>
+                      setExpandedInspectionIds((prev) =>
+                        prev.includes(inspection.id)
+                          ? prev.filter((value) => value !== inspection.id)
+                          : [...prev, inspection.id],
+                      ))
+                  }
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-sky-600 text-sm font-bold text-white hover:bg-sky-700"
+                  aria-label={
+                    isExpanded
+                      ? "Скрыть дочерние осмотры"
+                      : "Показать дочерние осмотры"
+                  }
+                >
+                  {isExpanded ? "-" : "+"}
+                </button>
+              )}
+              <div className="rounded-md bg-gray-500 px-3 py-1 text-xs font-medium text-white">
+                {formatDate(inspection.date)}
+              </div>
+              <div className="text-base font-bold text-gray-800">
+                Амбулаторный осмотр
+              </div>
+            </div>
+            <Link
+              to={`/inspection/${inspection.id}`}
+              className="inline-flex items-center gap-1 text-sm font-medium text-sky-600 hover:text-sky-700"
+            >
+              <SearchIcon className="h-4 w-4 text-sky-600" />
+              Детали осмотра
+            </Link>
+          </div>
+
+          <div>
+            <span className="font-medium text-gray-800">Заключение:</span>{" "}
+            {getConclusionLabel(inspection.conclusion)}
+          </div>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 font-medium text-gray-800">Диагноз:</span>
+            <span
+              className="min-w-0 flex-1 lg:truncate"
+              title={inspection.diagnosis?.name || ""}
+            >
+              {inspection.diagnosis?.name || "-"}
+            </span>
+          </div>
+          <div className="text-gray-500/90 lg:truncate" title={inspection.doctor || ""}>
+            Медицинский работник: {inspection.doctor || "-"}
+          </div>
+        </div>
+      </article>
+
+      {canExpand && isExpanded && (
+        <div className="mt-3 space-y-3">
+          {chainStatus === "loading" && (
+            <div className="rounded-xl bg-[#fefcff] p-4 text-sm text-gray-500">
+              Загрузка цепочки...
+            </div>
+          )}
+          {chainStatus === "error" && (
+            <div className="rounded-xl bg-[#fefcff] p-4 text-sm text-red-500">
+              Не удалось загрузить цепочку осмотров
+            </div>
+          )}
+          {chainStatus === "success" &&
+            directChildren.map((child) => (
+              <ConsultationCard
+                key={child.id}
+                inspection={child}
+                grouped={grouped}
+                expandedInspectionIds={expandedInspectionIds}
+                setExpandedInspectionIds={setExpandedInspectionIds}
+                childrenByParentId={childrenByParentId}
+                chainStatus="success"
+                depth={depth + 1}
+              />
+            ))}
+        </div>
+      )}
+    </div>
+  );
 };
 
 export const ConsultationPage = () => {
+  const queryClient = useQueryClient();
   const [filters, setFilters] = useState({
-    icdRoot: "",
+    icdRoots: [] as string[],
     grouped: false,
     showAll: true,
     size: DEFAULT_SIZE,
@@ -93,6 +230,20 @@ export const ConsultationPage = () => {
     page: DEFAULT_PAGE,
     size: DEFAULT_SIZE,
   });
+  const [expandedInspectionIds, setExpandedInspectionIds] = useState<string[]>(
+    [],
+  );
+  const [chainByRootId, setChainByRootId] = useState<
+    Record<
+      string,
+      {
+        status: "idle" | "loading" | "success" | "error";
+        childrenByParentId?: Map<string, ConsultationInspection[]>;
+      }
+    >
+  >({});
+  const [isIcdRootsOpen, setIsIcdRootsOpen] = useState(false);
+  const icdRootsRef = useRef<HTMLDivElement | null>(null);
 
   const {
     data: consultationsData,
@@ -109,21 +260,77 @@ export const ConsultationPage = () => {
     () => normalizeIcdRoots(icdRootsData),
     [icdRootsData],
   );
+  const sortedIcdRoots = useMemo(() => sortIcdRootsByLabel(icdRoots), [icdRoots]);
+  const icdRootById = useMemo(
+    () => new Map(icdRoots.map((root) => [root.id, root])),
+    [icdRoots],
+  );
+
+  const consultationsToRender = useMemo(() => {
+    if (!queryParams.grouped) return consultations;
+    const ids = new Set(consultations.map((inspection) => inspection.id));
+    return consultations.filter((inspection) => {
+      if (!inspection.previousId || inspection.previousId === inspection.id) {
+        return true;
+      }
+      return !ids.has(inspection.previousId);
+    });
+  }, [consultations, queryParams.grouped]);
+
   const visibleConsultations = useMemo(() => {
-    if (filters.showAll) return consultations;
-    return consultations.filter(
+    if (filters.showAll) return consultationsToRender;
+    return consultationsToRender.filter(
       (inspection) =>
         !inspection.previousId || inspection.previousId === inspection.id,
     );
-  }, [consultations, filters.showAll]);
+  }, [consultationsToRender, filters.showAll]);
+
+  useEffect(() => {
+    if (!isIcdRootsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (icdRootsRef.current && !icdRootsRef.current.contains(target)) {
+        setIsIcdRootsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsIcdRootsOpen(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isIcdRootsOpen]);
+
+  const selectedIcdRootsText = useMemo(() => {
+    if (!filters.icdRoots.length) return "Все корни";
+    return filters.icdRoots
+      .map((id) => {
+        const root = icdRootById.get(id);
+        return root ? getIcdRootLabel(root) : id;
+      })
+      .join(", ");
+  }, [filters.icdRoots, icdRootById]);
 
   const totalCount = useMemo(
     () => extractTotalCount(consultationsData),
     [consultationsData],
   );
-  const totalPages = totalCount
-    ? Math.max(1, Math.ceil(totalCount / (queryParams.size ?? DEFAULT_SIZE)))
-    : null;
+  const totalPagesFromServer = useMemo(
+    () => extractTotalPages(consultationsData),
+    [consultationsData],
+  );
+  const totalPages =
+    totalPagesFromServer ??
+    (totalCount
+      ? Math.max(1, Math.ceil(totalCount / (queryParams.size ?? DEFAULT_SIZE)))
+      : null);
   const hasNextPage = totalPages
     ? (queryParams.page ?? DEFAULT_PAGE) < totalPages
     : consultations.length === (queryParams.size ?? DEFAULT_SIZE);
@@ -142,33 +349,99 @@ export const ConsultationPage = () => {
               event.preventDefault();
               setQueryParams({
                 grouped: filters.grouped,
-                icdRoots: filters.icdRoot ? [filters.icdRoot] : [],
+                icdRoots: filters.icdRoots,
                 page: DEFAULT_PAGE,
                 size: filters.size,
               });
+              setExpandedInspectionIds([]);
+              setChainByRootId({});
+              setIsIcdRootsOpen(false);
             }}
           >
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
               <label className="block text-sm text-gray-700">
                 <span className="mb-1 block font-medium">МКБ-10</span>
-                <select
-                  value={filters.icdRoot}
-                  onChange={(event) =>
-                    setFilters((prev) => ({
-                      ...prev,
-                      icdRoot: event.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                >
-                  <option value="">Все корни</option>
-                  {icdRoots.map((root) => (
-                    <option key={root.id} value={root.id}>
-                      {[root.code, root.name].filter(Boolean).join(" - ") ||
-                        root.id}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative" ref={icdRootsRef}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-left outline-none focus:border-sky-400"
+                    onClick={() => setIsIcdRootsOpen((prev) => !prev)}
+                    aria-haspopup="listbox"
+                    aria-expanded={isIcdRootsOpen}
+                  >
+                    <span
+                      className={
+                        filters.icdRoots.length ? "text-gray-800" : "text-gray-400"
+                      }
+                    >
+                      {selectedIcdRootsText}
+                    </span>
+                    <span className="ml-3 text-gray-400">▾</span>
+                  </button>
+
+                  {isIcdRootsOpen && (
+                    <div
+                      className="absolute z-10 mt-1 w-full rounded-lg border border-gray-200 bg-white p-2 shadow-lg"
+                      role="listbox"
+                    >
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md border border-sky-200 px-3 py-1 text-xs text-sky-700 hover:bg-sky-50"
+                          onClick={() =>
+                            setFilters((prev) => ({
+                              ...prev,
+                              icdRoots: sortedIcdRoots.map((root) => root.id),
+                            }))
+                          }
+                        >
+                          Выбрать все
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-gray-200 px-3 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                          onClick={() =>
+                            setFilters((prev) => ({ ...prev, icdRoots: [] }))
+                          }
+                        >
+                          Сбросить
+                        </button>
+                      </div>
+
+                      <div className="max-h-64 space-y-1 overflow-auto">
+                        {sortedIcdRoots.map((root) => (
+                          <label
+                            key={root.id}
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-gray-700 hover:bg-sky-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={filters.icdRoots.includes(root.id)}
+                              onChange={() =>
+                                setFilters((prev) => {
+                                  const next = prev.icdRoots.includes(root.id)
+                                    ? prev.icdRoots.filter((value) => value !== root.id)
+                                    : [...prev.icdRoots, root.id];
+                                  const normalized = Array.from(new Set(next));
+                                  normalized.sort((a, b) =>
+                                    getIcdRootLabel(icdRootById.get(a) ?? { id: a })
+                                      .localeCompare(
+                                        getIcdRootLabel(icdRootById.get(b) ?? { id: b }),
+                                        "en",
+                                        { numeric: true, sensitivity: "base" },
+                                      ),
+                                  );
+                                  return { ...prev, icdRoots: normalized };
+                                })
+                              }
+                            />
+                            <span>{getIcdRootLabel(root)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </label>
 
               <label className="flex items-center gap-3 text-sm text-gray-700">
@@ -177,12 +450,20 @@ export const ConsultationPage = () => {
                     type="checkbox"
                     className="peer sr-only"
                     checked={filters.grouped}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const nextGrouped = event.target.checked;
                       setFilters((prev) => ({
                         ...prev,
-                        grouped: event.target.checked,
-                      }))
-                    }
+                        grouped: nextGrouped,
+                      }));
+                      setQueryParams((prev) => ({
+                        ...prev,
+                        grouped: nextGrouped,
+                        page: DEFAULT_PAGE,
+                      }));
+                      setExpandedInspectionIds([]);
+                      setChainByRootId({});
+                    }}
                   />
                   <span className="h-5 w-9 rounded-full bg-gray-200 transition peer-checked:bg-sky-500" />
                   <span className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition peer-checked:translate-x-4" />
@@ -262,48 +543,87 @@ export const ConsultationPage = () => {
           )}
 
           {!isLoading && !isError && visibleConsultations.length > 0 && (
-            <div className="grid gap-5 xl:grid-cols-2">
-              {visibleConsultations.map((inspection) => (
-                <article
-                  key={inspection.id}
-                  className="w-full rounded-xl border border-violet-100 bg-[#fefcff] p-4 shadow-sm transition hover:bg-orange-100"
-                >
-                  <div className="space-y-3 text-sm text-gray-600">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className="rounded-md bg-gray-500 px-3 py-1 text-xs font-medium text-white">
-                          {formatDate(inspection.date)}
-                        </div>
-                        <div className="text-base font-bold text-gray-800">
-                          Амбулаторный осмотр
-                        </div>
-                      </div>
-                      <Link
-                        to={`/inspection/${inspection.id}`}
-                        className="text-sm font-medium text-sky-600 hover:text-sky-700"
-                      >
-                        Детали осмотра
-                      </Link>
-                    </div>
+            <div className="grid items-start gap-5 xl:grid-cols-2">
+              {visibleConsultations.map((inspection) => {
+                const rootChainState = chainByRootId[inspection.id] ?? {
+                  status: "idle" as const,
+                };
 
-                    <div>
-                      <span className="font-medium text-gray-800">
-                        Заключение:
-                      </span>{" "}
-                      {getConclusionLabel(inspection.conclusion)}
-                    </div>
-                    <div>
-                      <span className="font-medium text-gray-800">
-                        Диагноз:
-                      </span>{" "}
-                      {inspection.diagnosis?.name || "-"}
-                    </div>
-                    <div className="text-gray-500/90">
-                      Медицинский работник: {inspection.doctor || "-"}
-                    </div>
-                  </div>
-                </article>
-              ))}
+                const grouped = Boolean(queryParams.grouped);
+                const canExpandRoot =
+                  grouped && Boolean(inspection.hasChain || inspection.hasNested);
+                const isRootExpanded = expandedInspectionIds.includes(
+                  inspection.id,
+                );
+
+                const ensureRootChainLoaded = async () => {
+                  setChainByRootId((prev) => ({
+                    ...prev,
+                    [inspection.id]: {
+                      status: prev[inspection.id]?.status === "success" ? "success" : "loading",
+                      childrenByParentId: prev[inspection.id]?.childrenByParentId,
+                    },
+                  }));
+
+                  try {
+                    const data = await queryClient.fetchQuery({
+                      ...loadInspectionChain(inspection.id),
+                    });
+                    const items = normalizeConsultations(data);
+                    const childrenByParentId = buildChildrenByParentId(
+                      inspection.id,
+                      items,
+                    );
+                    setChainByRootId((prev) => ({
+                      ...prev,
+                      [inspection.id]: { status: "success", childrenByParentId },
+                    }));
+                  } catch (error) {
+                    console.error(error);
+                    setChainByRootId((prev) => ({
+                      ...prev,
+                      [inspection.id]: { status: "error" },
+                    }));
+                  }
+                };
+
+                const onToggleRootExpand = () => {
+                  if (!canExpandRoot) return;
+                  const willExpand = !isRootExpanded;
+                  setExpandedInspectionIds((prev) =>
+                    prev.includes(inspection.id)
+                      ? prev.filter((value) => value !== inspection.id)
+                      : [...prev, inspection.id],
+                  );
+
+                  if (
+                    willExpand &&
+                    rootChainState.status !== "success" &&
+                    rootChainState.status !== "loading"
+                  ) {
+                    void ensureRootChainLoaded();
+                  }
+                };
+
+                const effectiveChainStatus = canExpandRoot
+                  ? isRootExpanded
+                    ? rootChainState.status
+                    : "idle"
+                  : "idle";
+
+                return (
+                  <ConsultationCard
+                    key={inspection.id}
+                    inspection={inspection}
+                    grouped={grouped}
+                    expandedInspectionIds={expandedInspectionIds}
+                    setExpandedInspectionIds={setExpandedInspectionIds}
+                    childrenByParentId={rootChainState.childrenByParentId}
+                    chainStatus={effectiveChainStatus}
+                    onToggleExpand={onToggleRootExpand}
+                  />
+                );
+              })}
             </div>
           )}
 

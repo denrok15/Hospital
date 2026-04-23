@@ -1,6 +1,6 @@
 import { http } from "app/utils";
 import { queryOptions } from "@tanstack/react-query";
-import type { UserProfile } from "app/shared";
+import type { SpecialityDictionaryItem, UserProfile } from "app/shared";
 
 export const profileKeyFactory = {
   loadProfileData: () => ["loadProfile"],
@@ -16,11 +16,6 @@ export const loadProfileData = () => {
 
 export const updateProfile = (data: unknown) => {
   return http.put<UserProfile>("/doctor/profile", data);
-};
-
-export type SpecialityDictionaryItem = {
-  id?: string;
-  name: string;
 };
 
 export const loadSpecialities = () => {

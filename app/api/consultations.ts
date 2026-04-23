@@ -1,79 +1,13 @@
 import { queryOptions } from "@tanstack/react-query";
 import { http } from "app/utils";
-
-export type ConsultationQuery = {
-  grouped?: boolean;
-  icdRoots?: string[];
-  page?: number;
-  size?: number;
-};
-
-export type ConsultationInspection = {
-  id: string;
-  createTime?: string;
-  previousId?: string | null;
-  date: string;
-  conclusion: string;
-  doctor?: string;
-  doctorId?: string;
-  patient?: string;
-  patientId?: string;
-  diagnosis?: {
-    id?: string;
-    code?: string;
-    name?: string;
-    description?: string;
-    type?: string;
-  } | null;
-  hasChain?: boolean;
-  hasNested?: boolean;
-};
-
-export type ConsultationsResponse = {
-  inspections?: ConsultationInspection[];
-  items?: ConsultationInspection[];
-  records?: ConsultationInspection[];
-  data?: ConsultationInspection[];
-  totalCount?: number;
-  total?: number;
-  count?: number;
-  pagination?: {
-    totalCount?: number;
-    total?: number;
-    count?: number;
-    current?: number;
-    size?: number;
-  };
-};
-
-export type ConsultationDetail = {
-  id: string;
-  inspectionId?: string;
-  speciality?: {
-    id: string;
-    name: string;
-    createTime?: string;
-  };
-  comments?: Array<{
-    id: string;
-    parentId: string | null;
-    content: string;
-    authorId?: string;
-    author?: string;
-    modifiedDate?: string;
-    createTime?: string;
-  }>;
-  createTime?: string;
-};
-
-export type CreateConsultationCommentDto = {
-  content: string;
-  parentId: string | null;
-};
-
-export type UpdateConsultationCommentDto = {
-  content: string;
-};
+import type {
+  ConsultationDetail,
+  ConsultationInspection,
+  ConsultationQuery,
+  ConsultationsResponse,
+  CreateConsultationCommentDto,
+  UpdateConsultationCommentDto,
+} from "app/shared";
 
 export const consultationsKeyFactory = {
   loadConsultations: (params?: ConsultationQuery) => [
@@ -81,6 +15,7 @@ export const consultationsKeyFactory = {
     params ?? {},
   ],
   loadConsultationById: (id: string) => ["loadConsultationById", id],
+  loadInspectionChain: (id: string) => ["loadInspectionChain", id],
 };
 
 const isGuid = (value: string) =>
@@ -123,6 +58,16 @@ export const loadConsultationById = (id: string) => {
   return queryOptions({
     queryKey: consultationsKeyFactory.loadConsultationById(id),
     queryFn: () => http.get<ConsultationDetail>(`/consultation/${id}`),
+  });
+};
+
+export const loadInspectionChain = (inspectionId: string) => {
+  return queryOptions({
+    queryKey: consultationsKeyFactory.loadInspectionChain(inspectionId),
+    queryFn: () =>
+      http.get<ConsultationInspection[] | ConsultationsResponse>(
+        `/inspection/${inspectionId}/chain`,
+      ),
   });
 };
 

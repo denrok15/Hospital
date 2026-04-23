@@ -7,10 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import { ToasterContext, type ToastType } from "./toaster-context";
-
+import { TOAST_LIFETIME_MS } from "app/shared/consts";
 type ToastItem = { id: number; text: string; type: ToastType };
-
-const TOAST_LIFETIME_MS = 3500;
 
 const ToastList = ({
   toasts,

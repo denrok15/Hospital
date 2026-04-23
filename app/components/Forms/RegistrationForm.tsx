@@ -3,16 +3,39 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { yupResolver } from "@hookform/resolvers/yup";
 import * as yup from "yup";
-import { AuthApi } from "app/utils";
+import { AuthApi, normalizeSpecialities } from "app/utils";
 import { FormBlock, type FormField } from "./FormBlock";
 import type { AxiosError } from "axios";
 import type { RegisterDto } from "app/shared";
-import { loadSpecialities, type SpecialityDictionaryItem } from "app/api/user";
+import { loadSpecialities } from "app/api/user";
 import { useNavigate } from "react-router-dom";
 import { useToaster } from "app/components/toaster-context";
 
 type RegisterFormValues = Omit<RegisterDto, "gender"> & {
   gender: "Male" | "Female" | "";
+};
+
+const formatRuPhone = (value: string) => {
+  const digitsOnly = value.replace(/\D/g, "");
+  if (!digitsOnly) return "";
+
+  let digits = digitsOnly;
+  if (digits[0] === "8") digits = `7${digits.slice(1)}`;
+  if (digits[0] !== "7") digits = `7${digits}`;
+  digits = digits.slice(0, 11);
+
+  const national = digits.slice(1);
+  const part1 = national.slice(0, 3);
+  const part2 = national.slice(3, 6);
+  const part3 = national.slice(6, 8);
+  const part4 = national.slice(8, 10);
+
+  let formatted = "+7";
+  if (part1) formatted += ` ${part1}`;
+  if (part2) formatted += ` ${part2}`;
+  if (part3) formatted += `-${part3}`;
+  if (part4) formatted += `-${part4}`;
+  return formatted;
 };
 
 const schema = yup.object({
@@ -26,33 +49,19 @@ const schema = yup.object({
     .string()
     .matches(/^\d{4}-\d{2}-\d{2}$/, "Формат даты: ГГГГ-ММ-ДД")
     .required("Введите дату рождения"),
-  gender: yup.string().oneOf(["Male", "Female"], "Выберите пол"),
+  gender: yup
+    .mixed<RegisterFormValues["gender"]>()
+    .oneOf(["Male", "Female", ""], "Выберите пол")
+    .defined(),
   phone: yup
     .string()
-    .matches(/^[+]?[\d\s-]+$/, "Некорректный телефон")
+    .matches(
+      /^\+7 \d{3} \d{3}-\d{2}-\d{2}$/,
+      "Телефон в формате +7 900 000-00-00",
+    )
     .required("Введите телефон"),
   speciality: yup.string().required("Укажите специальность"),
 });
-
-const normalizeSpecialities = (
-  data:
-    | SpecialityDictionaryItem[]
-    | {
-        specialties?: SpecialityDictionaryItem[];
-        specialities?: SpecialityDictionaryItem[];
-        items?: SpecialityDictionaryItem[];
-        data?: SpecialityDictionaryItem[];
-      }
-    | undefined,
-) => {
-  if (!data) return [] as SpecialityDictionaryItem[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.specialties)) return data.specialties;
-  if (Array.isArray(data.specialities)) return data.specialities;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as SpecialityDictionaryItem[];
-};
 
 export const RegisterForm = () => {
   const navigate = useNavigate();
@@ -106,6 +115,10 @@ export const RegisterForm = () => {
         label: "Телефон",
         type: "tel",
         wrapperClassName: "sm:col-span-2",
+        inputMode: "tel",
+        autoComplete: "tel",
+        maxLength: 16,
+        formatValue: formatRuPhone,
       },
       {
         name: "speciality",
@@ -188,7 +201,7 @@ export const RegisterForm = () => {
 
   return (
     <FormBlock<RegisterFormValues>
-      title="Регистрация"
+      title="Регистрация пользователя"
       fields={fields}
       submitText="Зарегистрироваться"
       onSubmit={onSubmit}

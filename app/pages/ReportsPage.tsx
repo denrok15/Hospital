@@ -1,80 +1,43 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { generateIcdRootsReport } from "app/api/report";
+import { loadIcdRoots } from "app/api/patients";
+import type { IcdRoot, IcdRootsReportResponse } from "app/shared";
+import { formatDate, getGenderLabel } from "app/utils";
+import { normalizeIcdRoots } from "app/utils";
 import {
-  generateIcdRootsReport,
-  type IcdRootsReportResponse,
-} from "app/api/report";
+  toInputDate,
+  toStartOfDayIso,
+  toEndOfDayIso,
+} from "app/utils";
 
-const DEFAULT_ICD_ROOTS = [
-  "A00-B99",
-  "C00-D48",
-  "D50-D89",
-  "E00-E90",
-  "F00-F99",
-  "G00-G99",
-  "H00-H59",
-  "H60-H95",
-  "I00-I99",
-  "J00-J99",
-  "K00-K93",
-  "L00-L99",
-  "M00-M99",
-  "N00-N99",
-  "O00-O99",
-  "P00-P96",
-  "Q00-Q99",
-  "R00-R99",
-  "S00-T98",
-  "U00-U85",
-  "V01-Y98",
-  "Z00-Z99",
-];
+const getIcdRootLabel = (root: IcdRoot) =>
+  [root.code, root.name].filter(Boolean).join(" - ") || root.id;
 
-const toInputDate = (date: Date) => date.toISOString().slice(0, 10);
-
-const toStartOfDayIso = (value: string) => {
-  const date = new Date(`${value}T00:00:00`);
-  return date.toISOString();
-};
-
-const toEndOfDayIso = (value: string) => {
-  const date = new Date(`${value}T23:59:59.999`);
-  return date.toISOString();
-};
-
-const formatDate = (value?: string) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString("ru-RU");
-};
-
-const getGenderLabel = (value?: string) => {
-  if (!value) return "-";
-  if (value === "Male") return "Мужской";
-  if (value === "Female") return "Женский";
-  return value;
-};
-
-const sortIcdRoots = (roots: string[]) => {
-  return [...roots].sort((a, b) =>
-    a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }),
+const sortRootIdsByLabel = (ids: string[], rootById: Map<string, IcdRoot>) => {
+  return [...ids].sort((a, b) =>
+    getIcdRootLabel(rootById.get(a) ?? { id: a }).localeCompare(
+      getIcdRootLabel(rootById.get(b) ?? { id: b }),
+      "en",
+      { numeric: true, sensitivity: "base" },
+    ),
   );
 };
 
 const getVisibleRoots = (
   report: IcdRootsReportResponse | undefined,
   selectedRoots: string[],
+  rootById: Map<string, IcdRoot>,
 ) => {
   if (report) {
     const fromFilters = report.filters?.icdRoots ?? [];
     const roots = fromFilters.length
       ? fromFilters
       : Object.keys(report.summaryByRoot ?? {});
-    return sortIcdRoots(roots);
+    return sortRootIdsByLabel(roots, rootById);
   }
-  if (selectedRoots.length > 0) return sortIcdRoots(selectedRoots);
-  return sortIcdRoots(DEFAULT_ICD_ROOTS);
+  if (selectedRoots.length > 0) return sortRootIdsByLabel(selectedRoots, rootById);
+  return [];
 };
 
 export const ReportsPage = () => {
@@ -86,6 +49,23 @@ export const ReportsPage = () => {
   const [endDate, setEndDate] = useState(toInputDate(today));
   const [selectedRoots, setSelectedRoots] = useState<string[]>([]);
 
+  const { data: icdRootsData } = useQuery(loadIcdRoots());
+  const icdRoots = useMemo(() => normalizeIcdRoots(icdRootsData), [icdRootsData]);
+  const sortedIcdRoots = useMemo(
+    () =>
+      [...icdRoots].sort((a, b) =>
+        getIcdRootLabel(a).localeCompare(getIcdRootLabel(b), "en", {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      ),
+    [icdRoots],
+  );
+  const icdRootById = useMemo(
+    () => new Map(icdRoots.map((root) => [root.id, root])),
+    [icdRoots],
+  );
+
   const reportMutation = useMutation({
     mutationFn: generateIcdRootsReport,
   });
@@ -93,13 +73,15 @@ export const ReportsPage = () => {
   const report = reportMutation.data;
 
   const visibleRoots = useMemo(
-    () => getVisibleRoots(report, selectedRoots),
-    [report, selectedRoots],
+    () => getVisibleRoots(report, selectedRoots, icdRootById),
+    [icdRootById, report, selectedRoots],
   );
 
   const handleRootToggle = (root: string) => {
     setSelectedRoots((prev) =>
-      prev.includes(root) ? prev.filter((item) => item !== root) : [...prev, root],
+      prev.includes(root)
+        ? prev.filter((item) => item !== root)
+        : [...prev, root],
     );
   };
 
@@ -108,7 +90,10 @@ export const ReportsPage = () => {
     reportMutation.mutate({
       start: toStartOfDayIso(startDate),
       end: toEndOfDayIso(endDate),
-      icdRoots: selectedRoots.length > 0 ? sortIcdRoots(selectedRoots) : undefined,
+      icdRoots:
+        selectedRoots.length > 0
+          ? sortRootIdsByLabel(selectedRoots, icdRootById)
+          : undefined,
     });
   };
 
@@ -157,7 +142,8 @@ export const ReportsPage = () => {
               <button
                 type="button"
                 className="rounded-md border border-sky-200 px-3 py-1 text-xs text-sky-700 hover:bg-sky-50"
-                onClick={() => setSelectedRoots(sortIcdRoots(DEFAULT_ICD_ROOTS))}
+                disabled={sortedIcdRoots.length === 0}
+                onClick={() => setSelectedRoots(sortedIcdRoots.map((root) => root.id))}
               >
                 Выбрать все
               </button>
@@ -171,19 +157,29 @@ export const ReportsPage = () => {
             </div>
 
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {sortIcdRoots(DEFAULT_ICD_ROOTS).map((root) => (
+              {sortedIcdRoots.map((root) => (
                 <label
-                  key={root}
-                  className="flex items-center gap-2 rounded-md border border-violet-100 bg-white px-3 py-2 text-sm text-gray-700"
+                  key={root.id}
+                  className="flex h-12 items-center gap-2 rounded-md border border-violet-100 bg-white px-3 text-sm text-gray-700 hover:bg-sky-50 cursor-pointer"
                 >
                   <input
                     type="checkbox"
-                    checked={selectedRoots.includes(root)}
-                    onChange={() => handleRootToggle(root)}
+                    checked={selectedRoots.includes(root.id)}
+                    onChange={() => handleRootToggle(root.id)}
                   />
-                  <span>{root}</span>
+                  <span
+                    className="min-w-0 flex-1 truncate"
+                    title={getIcdRootLabel(root)}
+                  >
+                    {getIcdRootLabel(root)}
+                  </span>
                 </label>
               ))}
+              {sortedIcdRoots.length === 0 && (
+                <div className="text-sm text-gray-500">
+                  Загрузка справочника МКБ-10...
+                </div>
+              )}
             </div>
             <div className="mt-2 text-xs text-gray-500">
               Если ничего не выбрать, отчет строится по всем корням.
@@ -234,7 +230,7 @@ export const ReportsPage = () => {
                         key={root}
                         className="border border-violet-100 px-3 py-2 text-center whitespace-nowrap"
                       >
-                        {root}
+                        {getIcdRootLabel(icdRootById.get(root) ?? { id: root })}
                       </th>
                     ))}
                   </tr>
@@ -278,7 +274,10 @@ export const ReportsPage = () => {
                   ))}
 
                   <tr className="bg-[#f8f5ff] font-semibold text-gray-800">
-                    <td className="border border-violet-100 px-3 py-2" colSpan={3}>
+                    <td
+                      className="border border-violet-100 px-3 py-2"
+                      colSpan={3}
+                    >
                       Итого
                     </td>
                     {visibleRoots.map((root) => (

@@ -71,7 +71,8 @@ export const LoginForm = () => {
       isSubmitting={isSubmitting}
       children={
         <button
-          className="mt-4 w-full bg-gray-300 p-4 text-center text-white rounded-lg hover: cursor-pointer"
+          type="button"
+          className="mt-4 w-full cursor-pointer rounded-lg bg-gray-300 p-4 text-center text-white transition hover:bg-gray-400"
           onClick={() => {
             navigate("/register");
           }}

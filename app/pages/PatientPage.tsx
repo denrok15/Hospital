@@ -1,50 +1,35 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
+import { createPatient, loadPatients } from "app/api/patients";
+import type { CreatePatientDto, Patient, PatientsQuery } from "app/shared";
+import { CreatePatientModal, UserAddIcon } from "app/components";
 import {
-  createPatient,
-  loadPatients,
-  type CreatePatientDto,
-  type Patient,
-  type PatientsQuery,
-} from "app/api/patients";
-
-const DEFAULT_PAGE = 1;
-const DEFAULT_SIZE = 5;
-const SIZE_OPTIONS = Array.from({ length: 10 }, (_, index) => index + 1);
-const CONCLUSIONS_OPTIONS = [
-  { value: "Disease", label: "Болезнь" },
-  { value: "Recovery", label: "Выздоровление" },
-  { value: "Death", label: "Смерть" },
-];
-
-const formatDate = (value?: string) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString("ru-RU");
-};
-
-const normalizePatients = (value: unknown): Patient[] => {
-  if (Array.isArray(value)) return value as Patient[];
-  if (value && typeof value === "object") {
-    const maybe = value as {
-      items?: unknown;
-      patients?: unknown;
-      data?: unknown;
-    };
-    if (Array.isArray(maybe.items)) return maybe.items as Patient[];
-    if (Array.isArray(maybe.patients)) return maybe.patients as Patient[];
-    if (Array.isArray(maybe.data)) return maybe.data as Patient[];
-  }
-  return [];
-};
+  CONCLUSIONS_OPTIONS,
+  DEFAULT_PAGE,
+  DEFAULT_SIZE,
+  SIZE_OPTIONS,
+} from "app/shared/consts";
+import { formatDate, normalizePatients } from "app/utils";
 
 const parsePositiveInt = (value: string | null) => {
   if (!value) return null;
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed <= 0) return null;
   return parsed;
+};
+
+const CONCLUSION_ORDER = new Map(
+  CONCLUSIONS_OPTIONS.map((option, index) => [option.value, index]),
+);
+
+const sortConclusions = (values: string[]) => {
+  return [...values].sort((a, b) => {
+    const orderA = CONCLUSION_ORDER.get(a) ?? Number.POSITIVE_INFINITY;
+    const orderB = CONCLUSION_ORDER.get(b) ?? Number.POSITIVE_INFINITY;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.localeCompare(b);
+  });
 };
 
 const parsePatientsQuery = (searchParams: URLSearchParams): PatientsQuery => {
@@ -74,7 +59,7 @@ const parsePatientsQuery = (searchParams: URLSearchParams): PatientsQuery => {
 
   return {
     name,
-    conclusions: normalizedConclusions,
+    conclusions: sortConclusions(normalizedConclusions),
     sorting,
     scheduledVisits,
     onlyMine,
@@ -88,7 +73,7 @@ const buildSearchParams = (query: PatientsQuery) => {
   const name = query.name?.trim() ?? "";
 
   if (name) params.set("name", name);
-  query.conclusions?.forEach((value) => {
+  sortConclusions(query.conclusions ?? []).forEach((value) => {
     params.append("conclusions", value);
   });
   if (query.sorting) params.set("sorting", query.sorting);
@@ -116,28 +101,44 @@ const buildSearchParams = (query: PatientsQuery) => {
   return params;
 };
 
-const extractTotalCount = (value: unknown) => {
-  if (!value || typeof value !== "object") return null;
+const extractPaginationMeta = (value: unknown) => {
+  if (!value || typeof value !== "object") {
+    return { totalItems: null, totalPages: null };
+  }
+
   const data = value as {
     totalCount?: unknown;
     total?: unknown;
-    count?: unknown;
-    pagination?: { totalCount?: unknown; total?: unknown; count?: unknown };
+    pagination?: {
+      totalCount?: unknown;
+      total?: unknown;
+      count?: unknown; // backend: total pages
+    };
   };
-  const candidates = [
+
+  const totalItemsCandidates = [
     data.totalCount,
     data.total,
-    data.count,
     data.pagination?.totalCount,
     data.pagination?.total,
-    data.pagination?.count,
   ];
-  for (const candidate of candidates) {
+  let totalItems: number | null = null;
+  for (const candidate of totalItemsCandidates) {
     if (typeof candidate === "number" && Number.isFinite(candidate)) {
-      return candidate;
+      totalItems = candidate;
+      break;
     }
   }
-  return null;
+
+  const countPagesCandidate = data.pagination?.count;
+  const totalPages =
+    typeof countPagesCandidate === "number" &&
+    Number.isFinite(countPagesCandidate) &&
+    countPagesCandidate > 0
+      ? Math.max(1, Math.trunc(countPagesCandidate))
+      : null;
+
+  return { totalItems, totalPages };
 };
 
 export const PatientPage = () => {
@@ -149,10 +150,17 @@ export const PatientPage = () => {
   );
   const { data, isLoading, isError } = useQuery(loadPatients(queryParams));
   const patients = normalizePatients(data);
-  const totalCount = extractTotalCount(data);
-  const totalPages = totalCount
-    ? Math.max(1, Math.ceil(totalCount / (queryParams.size ?? DEFAULT_SIZE)))
-    : null;
+  const paginationMeta = useMemo(() => extractPaginationMeta(data), [data]);
+  const totalPages =
+    paginationMeta.totalPages ??
+    (paginationMeta.totalItems
+      ? Math.max(
+          1,
+          Math.ceil(
+            paginationMeta.totalItems / (queryParams.size ?? DEFAULT_SIZE),
+          ),
+        )
+      : null);
   const hasNextPage = totalPages
     ? (queryParams.page ?? DEFAULT_PAGE) < totalPages
     : patients.length === (queryParams.size ?? DEFAULT_SIZE);
@@ -165,7 +173,31 @@ export const PatientPage = () => {
     onlyMine: queryParams.onlyMine ?? false,
     size: queryParams.size ?? DEFAULT_SIZE,
   }));
-  const conclusionsKey = (queryParams.conclusions ?? []).join("|");
+  const [isConclusionsOpen, setIsConclusionsOpen] = useState(false);
+  const conclusionsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isConclusionsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (conclusionsRef.current && !conclusionsRef.current.contains(target)) {
+        setIsConclusionsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsConclusionsOpen(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isConclusionsOpen]);
 
   useEffect(() => {
     setFilters({
@@ -178,11 +210,11 @@ export const PatientPage = () => {
     });
   }, [
     queryParams.name,
+    queryParams.conclusions,
     queryParams.sorting,
     queryParams.scheduledVisits,
     queryParams.onlyMine,
     queryParams.size,
-    conclusionsKey,
   ]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -229,6 +261,16 @@ export const PatientPage = () => {
     }
   };
 
+  const selectedConclusionsText = useMemo(() => {
+    if (!filters.conclusions.length) return "Любые";
+    const labelByValue = new Map(
+      CONCLUSIONS_OPTIONS.map((option) => [option.value, option.label]),
+    );
+    return sortConclusions(filters.conclusions)
+      .map((value) => labelByValue.get(value) ?? value)
+      .join(", ");
+  }, [filters.conclusions]);
+
   return (
     <div className="min-h-screen bg-white px-4 py-10">
       <div className="mx-auto w-full max-w-[1400px] rounded-2xl bg-transparent p-6">
@@ -236,9 +278,10 @@ export const PatientPage = () => {
           <h1 className="text-4xl font-semibold text-gray-800">Пациенты</h1>
           <button
             type="button"
-            className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-600"
+            className="flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-600"
             onClick={() => setIsModalOpen(true)}
           >
+            <UserAddIcon className="h-4 w-4 text-white" />
             Регистрация нового пациента
           </button>
         </div>
@@ -251,6 +294,7 @@ export const PatientPage = () => {
             className="mt-4 space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
+              setIsConclusionsOpen(false);
               const nextParams = buildSearchParams({
                 ...filters,
                 page: DEFAULT_PAGE,
@@ -279,25 +323,95 @@ export const PatientPage = () => {
                 <span className="mb-1 block font-medium">
                   Имеющиеся заключения
                 </span>
-                <select
-                  value={filters.conclusions[0] ?? ""}
-                  onChange={(event) =>
-                    setFilters((prev) => ({
-                      ...prev,
-                      conclusions: event.target.value
-                        ? [event.target.value]
-                        : [],
-                    }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                >
-                  <option value="">Любые</option>
-                  {CONCLUSIONS_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative" ref={conclusionsRef}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-left outline-none focus:border-sky-400"
+                    onClick={() => setIsConclusionsOpen((prev) => !prev)}
+                    aria-haspopup="listbox"
+                    aria-expanded={isConclusionsOpen}
+                  >
+                    <span
+                      className={
+                        filters.conclusions.length
+                          ? "text-gray-800"
+                          : "text-gray-400"
+                      }
+                    >
+                      {selectedConclusionsText}
+                    </span>
+                    <span className="ml-3 text-gray-400">▾</span>
+                  </button>
+
+                  {isConclusionsOpen && (
+                    <div
+                      className="absolute z-10 mt-1 w-full rounded-lg border border-gray-200 bg-white p-2 shadow-lg"
+                      role="listbox"
+                    >
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md border border-sky-200 px-3 py-1 text-xs text-sky-700 hover:bg-sky-50"
+                          onClick={() =>
+                            setFilters((prev) => ({
+                              ...prev,
+                              conclusions: sortConclusions(
+                                CONCLUSIONS_OPTIONS.map(
+                                  (option) => option.value,
+                                ),
+                              ),
+                            }))
+                          }
+                        >
+                          Выбрать все
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-gray-200 px-3 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                          onClick={() =>
+                            setFilters((prev) => ({ ...prev, conclusions: [] }))
+                          }
+                        >
+                          Сбросить
+                        </button>
+                      </div>
+
+                      <div className="space-y-1">
+                        {CONCLUSIONS_OPTIONS.map((option) => (
+                          <label
+                            key={option.value}
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-gray-700 hover:bg-sky-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={filters.conclusions.includes(
+                                option.value,
+                              )}
+                              onChange={() =>
+                                setFilters((prev) => {
+                                  const next = prev.conclusions.includes(
+                                    option.value,
+                                  )
+                                    ? prev.conclusions.filter(
+                                        (value) => value !== option.value,
+                                      )
+                                    : [...prev.conclusions, option.value];
+                                  return {
+                                    ...prev,
+                                    conclusions: sortConclusions(
+                                      Array.from(new Set(next)),
+                                    ),
+                                  };
+                                })
+                              }
+                            />
+                            <span>{option.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </label>
             </div>
 
@@ -426,12 +540,16 @@ export const PatientPage = () => {
               "block w-full rounded-xl border border-violet-100 bg-[#fefcff] p-4 shadow-sm transition hover:bg-orange-100";
             const content = (
               <>
-                <div className="text-base font-semibold text-gray-800">
+                <div
+                  className="truncate text-base font-semibold text-gray-800"
+                  title={patient.name || ""}
+                >
                   {patient.name || "ФИО -"}
                 </div>
                 <div className="mt-2 grid gap-2 text-sm text-gray-600">
-                  <div>Email - {patient.email || "-"}</div>
-                  <div>Пол - {patient.gender || "-"}</div>
+                  <div>
+                    Пол - {patient.gender === "Male" ? "Мужской" : "Женский"}
+                  </div>
                   <div>Дата рождения - {formatDate(patient.birthday)}</div>
                 </div>
               </>
@@ -439,10 +557,7 @@ export const PatientPage = () => {
 
             if (!patient.id) {
               return (
-                <div
-                  key={`${patient.name}-${index}`}
-                  className={cardClassName}
-                >
+                <div key={`${patient.name}-${index}`} className={cardClassName}>
                   {content}
                 </div>
               );
@@ -552,96 +667,20 @@ export const PatientPage = () => {
         )}
       </div>
 
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-800">
-                Новый пациент
-              </h2>
-              <button
-                type="button"
-                className="rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-100"
-                onClick={closeModal}
-              >
-                Закрыть
-              </button>
-            </div>
-
-            <div className="mt-4 space-y-4 text-sm text-gray-700">
-              <label className="block">
-                <span className="mb-1 block">ФИО</span>
-                <input
-                  value={form.name}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, name: event.target.value }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                  type="text"
-                  placeholder="Введите ФИО"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block">Дата рождения</span>
-                <input
-                  value={form.birthday}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      birthday: event.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                  type="date"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block">Пол</span>
-                <select
-                  value={form.gender}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      gender: event.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                >
-                  <option value="Male">Male</option>
-                  <option value="Female">Female</option>
-                </select>
-              </label>
-            </div>
-
-            {submitError && (
-              <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
-                {submitError}
-              </div>
-            )}
-
-            <div className="mt-6 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                className="rounded-lg px-4 py-2 text-sm text-gray-500 hover:bg-gray-100"
-                onClick={closeModal}
-                disabled={isSubmitting}
-              >
-                Отмена
-              </button>
-              <button
-                type="button"
-                className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
-                onClick={handleSubmit}
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? "Сохранение..." : "Сохранить"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CreatePatientModal
+        isOpen={isModalOpen}
+        form={form}
+        submitError={submitError}
+        isSubmitting={isSubmitting}
+        onClose={closeModal}
+        onSubmit={handleSubmit}
+        onFormChange={(patch) =>
+          setForm((prev) => ({
+            ...prev,
+            ...patch,
+          }))
+        }
+      />
     </div>
   );
 };

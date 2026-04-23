@@ -1,39 +1,38 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   loadIcdRoots,
   loadPatient,
   loadPatientInspections,
-  type IcdRoot,
-  type Inspection,
-  type InspectionsResponse,
-  type PatientInspectionsQuery,
 } from "app/api/patients";
+import { PencilIcon, SearchIcon } from "app/components";
+import type {
+  IcdRoot,
+  Inspection,
+  InspectionsResponse,
+  PatientInspectionsQuery,
+} from "app/shared";
+import { SIZE_OPTIONS, DEFAULT_PAGE, DEFAULT_SIZE } from "app/shared/consts";
+import {
+  formatDate,
+  getGenderLabel,
+  getGenderIcon,
+  getConclusionLabel,
+  normalizeInspections,
+  normalizeIcdRoots,
+} from "app/utils";
 
-const DEFAULT_SIZE = 5;
-const DEFAULT_PAGE = 1;
-const SIZE_OPTIONS = Array.from({ length: 10 }, (_, index) => index + 1);
+const getIcdRootLabel = (root: IcdRoot) =>
+  [root.code, root.name].filter(Boolean).join(" - ") || root.id;
 
-const formatDate = (value?: string) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString("ru-RU");
-};
-
-const normalizeInspections = (
-  data:
-    | Inspection[]
-    | InspectionsResponse
-    | undefined,
-) => {
-  if (!data) return [] as Inspection[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.inspections)) return data.inspections;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as Inspection[];
+const sortIcdRootsByLabel = (roots: IcdRoot[]) => {
+  return [...roots].sort((a, b) =>
+    getIcdRootLabel(a).localeCompare(getIcdRootLabel(b), "en", {
+      numeric: true,
+      sensitivity: "base",
+    }),
+  );
 };
 
 const extractTotalCount = (
@@ -43,10 +42,8 @@ const extractTotalCount = (
   const candidates = [
     data.totalCount,
     data.total,
-    data.count,
     data.pagination?.totalCount,
     data.pagination?.total,
-    data.pagination?.count,
   ];
   for (const candidate of candidates) {
     if (typeof candidate === "number" && Number.isFinite(candidate)) {
@@ -56,60 +53,37 @@ const extractTotalCount = (
   return null;
 };
 
-const normalizeIcdRoots = (
-  data:
-    | IcdRoot[]
-    | { items?: IcdRoot[]; data?: IcdRoot[]; icdRoots?: IcdRoot[]; roots?: IcdRoot[] }
-    | undefined,
+const extractTotalPages = (
+  data: Inspection[] | InspectionsResponse | undefined,
 ) => {
-  if (!data) return [] as IcdRoot[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.icdRoots)) return data.icdRoots;
-  if (Array.isArray(data.roots)) return data.roots;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as IcdRoot[];
-};
-
-const getConclusionLabel = (value?: string) => {
-  if (!value) return "-";
-  if (value === "Disease") return "Болезнь";
-  if (value === "Recovery") return "Выздоровление";
-  if (value === "Death") return "Смерть";
-  return value;
-};
-
-const getGenderLabel = (value?: string) => {
-  if (!value) return "-";
-  if (value === "Male") return "Мужской";
-  if (value === "Female") return "Женский";
-  return value;
-};
-
-const getGenderIcon = (value?: string) => {
-  if (value === "Male") return "♂";
-  if (value === "Female") return "♀";
-  return "⚧";
+  if (!data || Array.isArray(data)) return null;
+  const candidate = data.pagination?.count;
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) return null;
+  if (candidate <= 0) return null;
+  return Math.max(1, Math.trunc(candidate));
 };
 
 export const PatientCardPage = () => {
   const navigate = useNavigate();
   const { id = "" } = useParams();
   const [filters, setFilters] = useState({
-    icdRoot: "",
+    icdRoots: [] as string[],
     grouped: false,
     showAll: true,
     size: DEFAULT_SIZE,
   });
-  const [inspectionsQuery, setInspectionsQuery] = useState<PatientInspectionsQuery>({
-    grouped: false,
-    icdRoots: [],
-    page: DEFAULT_PAGE,
-    size: DEFAULT_SIZE,
-  });
+  const [inspectionsQuery, setInspectionsQuery] =
+    useState<PatientInspectionsQuery>({
+      grouped: false,
+      icdRoots: [],
+      page: DEFAULT_PAGE,
+      size: DEFAULT_SIZE,
+    });
   const [expandedInspectionIds, setExpandedInspectionIds] = useState<string[]>(
     [],
   );
+  const [isIcdRootsOpen, setIsIcdRootsOpen] = useState(false);
+  const icdRootsRef = useRef<HTMLDivElement | null>(null);
 
   const {
     data: patient,
@@ -146,29 +120,45 @@ export const PatientCardPage = () => {
     () => normalizeInspections(allInspectionsForChainData),
     [allInspectionsForChainData],
   );
-  const icdRoots = useMemo(() => normalizeIcdRoots(icdRootsData), [icdRootsData]);
+  const icdRoots = useMemo(
+    () => normalizeIcdRoots(icdRootsData),
+    [icdRootsData],
+  );
+  const sortedIcdRoots = useMemo(
+    () => sortIcdRootsByLabel(icdRoots),
+    [icdRoots],
+  );
+  const icdRootById = useMemo(
+    () => new Map(icdRoots.map((root) => [root.id, root])),
+    [icdRoots],
+  );
   const totalCount = useMemo(
     () => extractTotalCount(inspectionsData),
     [inspectionsData],
   );
-  const totalPages = totalCount
-    ? Math.max(
-        1,
-        Math.ceil(totalCount / (inspectionsQuery.size ?? DEFAULT_SIZE)),
-      )
-    : null;
+  const totalPagesFromServer = useMemo(
+    () => extractTotalPages(inspectionsData),
+    [inspectionsData],
+  );
+  const totalPages =
+    totalPagesFromServer ??
+    (totalCount
+      ? Math.max(
+          1,
+          Math.ceil(totalCount / (inspectionsQuery.size ?? DEFAULT_SIZE)),
+        )
+      : null);
   const hasNextPage = totalPages
     ? (inspectionsQuery.page ?? DEFAULT_PAGE) < totalPages
     : inspections.length === (inspectionsQuery.size ?? DEFAULT_SIZE);
 
   const childrenByPreviousId = useMemo(() => {
     const map = new Map<string, Inspection[]>();
-    const source = inspectionsQuery.grouped ? allInspectionsForChain : inspections;
+    const source = inspectionsQuery.grouped
+      ? allInspectionsForChain
+      : inspections;
     source.forEach((inspection) => {
-      if (
-        inspection.previousId &&
-        inspection.previousId !== inspection.id
-      ) {
+      if (inspection.previousId && inspection.previousId !== inspection.id) {
         const bucket = map.get(inspection.previousId) ?? [];
         bucket.push(inspection);
         map.set(inspection.previousId, bucket);
@@ -194,6 +184,39 @@ export const PatientCardPage = () => {
         !inspection.previousId || inspection.previousId === inspection.id,
     );
   }, [filters.showAll, inspectionsToRender]);
+
+  useEffect(() => {
+    if (!isIcdRootsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (icdRootsRef.current && !icdRootsRef.current.contains(target)) {
+        setIsIcdRootsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsIcdRootsOpen(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isIcdRootsOpen]);
+
+  const selectedIcdRootsText = useMemo(() => {
+    if (!filters.icdRoots.length) return "Все корни";
+    return filters.icdRoots
+      .map((id) => {
+        const root = icdRootById.get(id);
+        return root ? getIcdRootLabel(root) : id;
+      })
+      .join(", ");
+  }, [filters.icdRoots, icdRootById]);
 
   if (!id) {
     return (
@@ -230,7 +253,7 @@ export const PatientCardPage = () => {
           <div className="text-right">
             <button
               type="button"
-              className="rounded-lg bg-blue-500 px-7 py-3 text-sm font-medium text-white transition hover:bg-sky-600"
+              className="flex items-center gap-2 rounded-lg bg-blue-500 px-7 py-3 text-sm font-medium text-white transition hover:bg-sky-600"
               onClick={() => navigate(`/inspection/create?patientId=${id}`)}
             >
               Добавить осмотр
@@ -259,33 +282,105 @@ export const PatientCardPage = () => {
               event.preventDefault();
               setInspectionsQuery({
                 grouped: filters.grouped,
-                    icdRoots: filters.icdRoot ? [filters.icdRoot] : [],
+                icdRoots: filters.icdRoots,
                 page: DEFAULT_PAGE,
                 size: filters.size,
               });
               setExpandedInspectionIds([]);
+              setIsIcdRootsOpen(false);
             }}
           >
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
               <label className="block text-sm text-gray-700">
                 <span className="mb-1 block font-medium">МКБ-10</span>
-                <select
-                  value={filters.icdRoot}
-                  onChange={(event) =>
-                    setFilters((prev) => ({
-                      ...prev,
-                      icdRoot: event.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                >
-                  <option value="">Все корни</option>
-                  {icdRoots.map((root) => (
-                    <option key={root.id} value={root.id}>
-                      {[root.code, root.name].filter(Boolean).join(" - ") || root.id}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative" ref={icdRootsRef}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-left outline-none focus:border-sky-400"
+                    onClick={() => setIsIcdRootsOpen((prev) => !prev)}
+                    aria-haspopup="listbox"
+                    aria-expanded={isIcdRootsOpen}
+                  >
+                    <span
+                      className={
+                        filters.icdRoots.length
+                          ? "text-gray-800"
+                          : "text-gray-400"
+                      }
+                    >
+                      {selectedIcdRootsText}
+                    </span>
+                    <span className="ml-3 text-gray-400">▾</span>
+                  </button>
+
+                  {isIcdRootsOpen && (
+                    <div
+                      className="absolute z-10 mt-1 w-full rounded-lg border border-gray-200 bg-white p-2 shadow-lg"
+                      role="listbox"
+                    >
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md border border-sky-200 px-3 py-1 text-xs text-sky-700 hover:bg-sky-50"
+                          onClick={() =>
+                            setFilters((prev) => ({
+                              ...prev,
+                              icdRoots: sortedIcdRoots.map((root) => root.id),
+                            }))
+                          }
+                        >
+                          Выбрать все
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-gray-200 px-3 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                          onClick={() =>
+                            setFilters((prev) => ({ ...prev, icdRoots: [] }))
+                          }
+                        >
+                          Сбросить
+                        </button>
+                      </div>
+
+                      <div className="max-h-64 space-y-1 overflow-auto">
+                        {sortedIcdRoots.map((root) => (
+                          <label
+                            key={root.id}
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-gray-700 hover:bg-sky-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={filters.icdRoots.includes(root.id)}
+                              onChange={() =>
+                                setFilters((prev) => {
+                                  const next = prev.icdRoots.includes(root.id)
+                                    ? prev.icdRoots.filter(
+                                        (value) => value !== root.id,
+                                      )
+                                    : [...prev.icdRoots, root.id];
+                                  const normalized = Array.from(new Set(next));
+                                  normalized.sort((a, b) =>
+                                    getIcdRootLabel(
+                                      icdRootById.get(a) ?? { id: a },
+                                    ).localeCompare(
+                                      getIcdRootLabel(
+                                        icdRootById.get(b) ?? { id: b },
+                                      ),
+                                      "en",
+                                      { numeric: true, sensitivity: "base" },
+                                    ),
+                                  );
+                                  return { ...prev, icdRoots: normalized };
+                                })
+                              }
+                            />
+                            <span>{getIcdRootLabel(root)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </label>
 
               <label className="flex items-center gap-3 text-sm text-gray-700">
@@ -325,7 +420,6 @@ export const PatientCardPage = () => {
                 </span>
                 <span>Показать все</span>
               </label>
-
             </div>
 
             <div className="flex flex-wrap items-end justify-between gap-4">
@@ -387,12 +481,15 @@ export const PatientCardPage = () => {
                   const renderInspectionCard = (
                     current: Inspection,
                     depth: number,
-                  ): JSX.Element => {
+                  ): ReactNode => {
                     const hasChildrenInData =
                       (childrenByPreviousId.get(current.id)?.length ?? 0) > 0;
-                    const canExpandByFlag = current.hasNested || current.hasChain;
+                    const canExpandByFlag =
+                      current.hasNested || current.hasChain;
                     const canExpand = canExpandByFlag || hasChildrenInData;
-                    const isExpanded = expandedInspectionIds.includes(current.id);
+                    const isExpanded = expandedInspectionIds.includes(
+                      current.id,
+                    );
                     const marginLeft = Math.min(depth, 2) * 24;
 
                     return (
@@ -407,7 +504,9 @@ export const PatientCardPage = () => {
                                     onClick={() =>
                                       setExpandedInspectionIds((prev) =>
                                         prev.includes(current.id)
-                                          ? prev.filter((value) => value !== current.id)
+                                          ? prev.filter(
+                                              (value) => value !== current.id,
+                                            )
                                           : [...prev, current.id],
                                       )
                                     }
@@ -437,15 +536,17 @@ export const PatientCardPage = () => {
                                         `/inspection/create?patientId=${id}&previousInspectionId=${current.id}`,
                                       )
                                     }
-                                    className="text-sm font-medium text-sky-600 hover:text-sky-700"
+                                    className="inline-flex items-center gap-1 text-sm font-medium text-sky-600 hover:text-sky-700"
                                   >
+                                    <PencilIcon className="h-4 w-4 text-sky-600" />
                                     Добавить осмотр
                                   </button>
                                 )}
                                 <Link
                                   to={`/inspection/${current.id}`}
-                                  className="text-sm font-medium text-sky-600 hover:text-sky-700"
+                                  className="inline-flex items-center gap-1 text-sm font-medium text-sky-600 hover:text-sky-700"
                                 >
+                                  <SearchIcon className="h-4 w-4 text-sky-600" />
                                   Детали осмотра
                                 </Link>
                               </div>
@@ -458,16 +559,22 @@ export const PatientCardPage = () => {
                               {getConclusionLabel(current.conclusion)}
                             </div>
 
-                            <div>
-                              <span className="font-medium text-gray-800">
+                            <div className="flex min-w-0 items-baseline gap-2">
+                              <span className="shrink-0 font-medium text-gray-800">
                                 Основный диагноз:
-                              </span>{" "}
-                              <span className="font-semibold text-gray-900">
+                              </span>
+                              <span
+                                className="min-w-0 flex-1 lg:truncate"
+                                title={current.diagnosis?.name || ""}
+                              >
                                 {current.diagnosis?.name || "-"}
                               </span>
                             </div>
 
-                            <div className="text-gray-500/90">
+                            <div
+                              className="text-gray-500/90 lg:truncate"
+                              title={current.doctor || ""}
+                            >
                               Медицинский работник: {current.doctor || "-"}
                             </div>
                           </div>
@@ -483,9 +590,13 @@ export const PatientCardPage = () => {
                   let current = inspection;
                   let safety = 0;
                   while (safety < 20) {
-                    const isExpanded = expandedInspectionIds.includes(current.id);
+                    const isExpanded = expandedInspectionIds.includes(
+                      current.id,
+                    );
                     if (!isExpanded) break;
-                    const nextInspection = childrenByPreviousId.get(current.id)?.[0];
+                    const nextInspection = childrenByPreviousId.get(
+                      current.id,
+                    )?.[0];
                     if (!nextInspection) break;
                     chain.push(nextInspection);
                     current = nextInspection;
@@ -512,10 +623,15 @@ export const PatientCardPage = () => {
                   onClick={() =>
                     setInspectionsQuery((prev) => ({
                       ...prev,
-                      page: Math.max((prev.page ?? DEFAULT_PAGE) - 1, DEFAULT_PAGE),
+                      page: Math.max(
+                        (prev.page ?? DEFAULT_PAGE) - 1,
+                        DEFAULT_PAGE,
+                      ),
                     }))
                   }
-                  disabled={(inspectionsQuery.page ?? DEFAULT_PAGE) <= DEFAULT_PAGE}
+                  disabled={
+                    (inspectionsQuery.page ?? DEFAULT_PAGE) <= DEFAULT_PAGE
+                  }
                   className={`rounded-lg border px-3 py-1 transition ${
                     (inspectionsQuery.page ?? DEFAULT_PAGE) <= DEFAULT_PAGE
                       ? "cursor-not-allowed border-gray-200 text-gray-400"
@@ -553,7 +669,6 @@ export const PatientCardPage = () => {
             )}
         </section>
       </div>
-
     </div>
   );
 };

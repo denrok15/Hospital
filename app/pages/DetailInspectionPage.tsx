@@ -1,93 +1,34 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import {
   createConsultationComment,
   loadConsultationById,
   updateConsultationComment,
-  type ConsultationDetail,
 } from "app/api/consultations";
 import { loadProfileData } from "app/api";
 import {
   loadIcd10Diagnoses,
   loadInspectionDetail,
   updateInspection,
-  type Icd10Diagnosis,
-  type Icd10DiagnosisResponse,
-  type UpdateInspectionDiagnosisDto,
-  type UpdateInspectionDto,
 } from "app/api/patients";
-import { SectionCard } from "app/components";
-
-const formatDateTime = (value?: string | null) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("ru-RU");
-};
-
-const formatDate = (value?: string | null) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString("ru-RU");
-};
-
-const getConclusionLabel = (value?: string) => {
-  if (!value) return "-";
-  if (value === "Disease") return "Болезнь";
-  if (value === "Recovery") return "Выздоровление";
-  if (value === "Death") return "Смерть";
-  return value;
-};
-
-const getGenderLabel = (value?: string) => {
-  if (!value) return "-";
-  if (value === "Male") return "Мужской";
-  if (value === "Female") return "Женский";
-  return value;
-};
-
-const formatDateTimeShort = (value?: string) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("ru-RU", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const toDateTimeLocal = (value?: string | null) => {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
-    date.getHours(),
-  )}:${pad(date.getMinutes())}`;
-};
-
-const toIsoOrNull = (value: string) => {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toISOString();
-};
-
-const normalizeIcd10Diagnoses = (
-  data: Icd10Diagnosis[] | Icd10DiagnosisResponse | undefined,
-) => {
-  if (!data) return [] as Icd10Diagnosis[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.records)) return data.records;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as Icd10Diagnosis[];
-};
+import { EditInspectionModal, SectionCard } from "app/components";
+import {
+  formatDate,
+  getConclusionLabel,
+  getGenderLabel,
+  getDiagnosisTypeLabel,
+  formatDateTimeShort,
+  toDateTimeLocal,
+  toIsoOrNull,
+  normalizeIcd10Diagnoses,
+} from "app/utils";
+import type {
+  Icd10Diagnosis,
+  ConsultationDetail,
+  UpdateInspectionDiagnosisDto,
+  UpdateInspectionDto,
+} from "app/shared";
 
 type ConsultationComment = NonNullable<ConsultationDetail["comments"]>[number];
 
@@ -120,6 +61,9 @@ export const DetailInspectionPage = () => {
     useState("");
   const [selectedDiagnosisType, setSelectedDiagnosisType] =
     useState<UpdateInspectionDiagnosisDto["type"]>("Main");
+  const [editingDiagnosisIndex, setEditingDiagnosisIndex] = useState<
+    number | null
+  >(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [activeReplyTarget, setActiveReplyTarget] = useState<{
@@ -200,16 +144,6 @@ export const DetailInspectionPage = () => {
 
   const openEditModal = () => {
     if (!data) return;
-    const firstDiagnosis = data.diagnoses?.[0];
-    const resolvedFirstDiagnosisId =
-      (firstDiagnosis?.code
-        ? diseaseOptionByCode.get(firstDiagnosis.code)?.id
-        : undefined) ??
-      (firstDiagnosis?.name
-        ? diseaseOptionByName.get(firstDiagnosis.name)?.id
-        : undefined) ??
-      firstDiagnosis?.id ??
-      "";
     setForm({
       complaints: data.complaints ?? "",
       anamnesis: data.anamnesis ?? "",
@@ -232,10 +166,11 @@ export const DetailInspectionPage = () => {
           (diagnosis.type as UpdateInspectionDiagnosisDto["type"]) ?? "Main",
       })),
     });
-    setDiseaseSearch(firstDiagnosis?.name ?? "");
-    setSelectedDiseaseId(resolvedFirstDiagnosisId);
-    setSelectedDiseaseDescription(firstDiagnosis?.description ?? "");
+    setDiseaseSearch("");
+    setSelectedDiseaseId("");
+    setSelectedDiseaseDescription("");
     setSelectedDiagnosisType("Main");
+    setEditingDiagnosisIndex(null);
     setSaveError(null);
     setIsEditModalOpen(true);
   };
@@ -243,6 +178,14 @@ export const DetailInspectionPage = () => {
   const closeEditModal = () => {
     setIsEditModalOpen(false);
     setSaveError(null);
+  };
+
+  const resetDiagnosisEditor = () => {
+    setDiseaseSearch("");
+    setSelectedDiseaseId("");
+    setSelectedDiseaseDescription("");
+    setSelectedDiagnosisType("Main");
+    setEditingDiagnosisIndex(null);
   };
 
   const addDiagnosis = () => {
@@ -266,9 +209,92 @@ export const DetailInspectionPage = () => {
         },
       ],
     }));
-    setDiseaseSearch("");
-    setSelectedDiseaseId("");
-    setSelectedDiseaseDescription("");
+    resetDiagnosisEditor();
+  };
+
+  const startDiagnosisEdit = (index: number) => {
+    const diagnosis = form.diagnoses[index];
+    if (!diagnosis) return;
+
+    const option = diseaseOptions.find(
+      (item) => item.id === diagnosis.icdDiagnosisId,
+    );
+    const label = option
+      ? option.code
+        ? `${option.code} - ${option.name}`
+        : option.name
+      : diagnosis.icdDiagnosisId;
+
+    setEditingDiagnosisIndex(index);
+    setDiseaseSearch(label);
+    setSelectedDiseaseId(diagnosis.icdDiagnosisId);
+    setSelectedDiseaseDescription(diagnosis.description ?? "");
+    setSelectedDiagnosisType(diagnosis.type);
+  };
+
+  const updateDiagnosis = () => {
+    if (editingDiagnosisIndex === null) return;
+    const resolvedDiseaseId =
+      selectedDiseaseId ||
+      diseaseOptions.find(
+        (item) =>
+          item.name === diseaseSearch ||
+          item.code === diseaseSearch ||
+          `${item.code} - ${item.name}` === diseaseSearch,
+      )?.id;
+    if (!resolvedDiseaseId) return;
+
+    setForm((prev) => ({
+      ...prev,
+      diagnoses: prev.diagnoses.map((item, index) =>
+        index === editingDiagnosisIndex
+          ? {
+              icdDiagnosisId: resolvedDiseaseId,
+              description: selectedDiseaseDescription,
+              type: selectedDiagnosisType,
+            }
+          : item,
+      ),
+    }));
+    resetDiagnosisEditor();
+  };
+
+  const removeDiagnosis = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      diagnoses: prev.diagnoses.filter((_, idx) => idx !== index),
+    }));
+    setEditingDiagnosisIndex((prev) => {
+      if (prev === null) return null;
+      if (prev === index) return null;
+      if (prev > index) return prev - 1;
+      return prev;
+    });
+  };
+
+  const handleFormChange = (
+    patch: Partial<{
+      complaints: string;
+      anamnesis: string;
+      treatment: string;
+      conclusion: UpdateInspectionDto["conclusion"];
+      nextVisitDate: string;
+      deathDate: string;
+      diagnoses: UpdateInspectionDiagnosisDto[];
+    }>,
+  ) => {
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const handleDiseaseSearchChange = (value: string) => {
+    setDiseaseSearch(value);
+    const selected = diseaseOptions.find(
+      (option) =>
+        option.name === value ||
+        option.code === value ||
+        `${option.code} - ${option.name}` === value,
+    );
+    setSelectedDiseaseId(selected?.id ?? "");
   };
 
   const handleSave = async () => {
@@ -366,7 +392,7 @@ export const DetailInspectionPage = () => {
             <SectionCard className="text-sm text-gray-700">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div className="text-2xl font-semibold text-sky-700">
-                  Амбулаторный осмотр от {formatDateTime(data.date)}
+                  Амбулаторный осмотр от {formatDate(data.date)}
                 </div>
                 <button
                   type="button"
@@ -404,12 +430,18 @@ export const DetailInspectionPage = () => {
               <div>{data.complaints || "-"}</div>
             </SectionCard>
 
-            <SectionCard title="Анамнез заболевания" className="text-sm text-gray-700">
+            <SectionCard
+              title="Анамнез заболевания"
+              className="text-sm text-gray-700"
+            >
               <div>{data.anamnesis || "-"}</div>
             </SectionCard>
 
             {data.consultations.length === 0 && (
-              <SectionCard title="Консультация" className="text-sm text-gray-700">
+              <SectionCard
+                title="Консультация"
+                className="text-sm text-gray-700"
+              >
                 <div>-</div>
               </SectionCard>
             )}
@@ -452,7 +484,7 @@ export const DetailInspectionPage = () => {
                   const renderCommentNode = (
                     comment: ConsultationComment,
                     depth: number,
-                  ): JSX.Element => {
+                  ): ReactNode => {
                     const children = commentsMap.get(comment.id) ?? [];
                     const expandKey = `${consultation.id}:${comment.id}`;
                     const isExpanded = expandedReplies[expandKey] ?? false;
@@ -514,13 +546,22 @@ export const DetailInspectionPage = () => {
                             <button
                               type="button"
                               onClick={() => {
-                                setActiveReplyTarget({
-                                  consultationId: consultation.id,
-                                  parentId: comment.id,
-                                });
-                                setReplyContent("");
-                                setActiveEditTarget(null);
-                                setCommentActionError(null);
+                                if (
+                                  activeReplyTarget?.consultationId ===
+                                    consultation.id &&
+                                  activeReplyTarget.parentId === comment.id
+                                ) {
+                                  setActiveReplyTarget(null);
+                                  setReplyContent("");
+                                } else {
+                                  setActiveReplyTarget({
+                                    consultationId: consultation.id,
+                                    parentId: comment.id,
+                                  });
+                                  setReplyContent("");
+                                  setActiveEditTarget(null);
+                                  setCommentActionError(null);
+                                }
                               }}
                               className="font-medium text-sky-600 hover:text-sky-700"
                             >
@@ -532,70 +573,45 @@ export const DetailInspectionPage = () => {
                           activeEditTarget?.commentId === comment.id &&
                           activeEditTarget.consultationId ===
                             consultation.id && (
-                            <div className="mt-2 rounded-lg border border-violet-100 bg-white p-3">
-                              <textarea
+                            <div className="mt-2 flex items-center gap-2">
+                              <input
                                 value={editContent}
                                 onChange={(event) =>
                                   setEditContent(event.target.value)
                                 }
-                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
-                                rows={3}
+                                className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-sky-400"
+                                placeholder="Введите текст комментария"
                               />
-                              <div className="mt-2 flex items-center justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setActiveEditTarget(null);
-                                    setEditContent("");
-                                  }}
-                                  className="rounded-lg bg-gray-200 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300"
-                                >
-                                  Отмена
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={handleEditSubmit}
-                                  disabled={isCommentActionPending}
-                                  className="rounded-lg bg-blue-500 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-60"
-                                >
-                                  Сохранить
-                                </button>
-                              </div>
+                              <button
+                                type="button"
+                                onClick={handleEditSubmit}
+                                disabled={isCommentActionPending}
+                                className="whitespace-nowrap rounded-lg bg-blue-500 px-4 py-2 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-60"
+                              >
+                                Редактировать
+                              </button>
                             </div>
                           )}
                         {activeReplyTarget?.parentId === comment.id &&
                           activeReplyTarget.consultationId ===
                             consultation.id && (
-                            <div className="mt-2 rounded-lg border border-violet-100 bg-white p-3">
-                              <textarea
+                            <div className="mt-2 flex items-center gap-2">
+                              <input
                                 value={replyContent}
                                 onChange={(event) =>
                                   setReplyContent(event.target.value)
                                 }
-                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
-                                rows={3}
-                                placeholder="Введите ответ"
+                                className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-sky-400"
+                                placeholder="Введите текст комментария"
                               />
-                              <div className="mt-2 flex items-center justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setActiveReplyTarget(null);
-                                    setReplyContent("");
-                                  }}
-                                  className="rounded-lg bg-gray-200 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300"
-                                >
-                                  Отмена
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={handleReplySubmit}
-                                  disabled={isCommentActionPending}
-                                  className="rounded-lg bg-blue-500 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-60"
-                                >
-                                  Отправить
-                                </button>
-                              </div>
+                              <button
+                                type="button"
+                                onClick={handleReplySubmit}
+                                disabled={isCommentActionPending}
+                                className="whitespace-nowrap rounded-lg bg-blue-500 px-4 py-2 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-60"
+                              >
+                                Оставить комментарий
+                              </button>
                             </div>
                           )}
                         {isExpanded && children.length > 0 && (
@@ -631,13 +647,22 @@ export const DetailInspectionPage = () => {
                         <button
                           type="button"
                           onClick={() => {
-                            setActiveReplyTarget({
-                              consultationId: consultation.id,
-                              parentId: null,
-                            });
-                            setReplyContent("");
-                            setActiveEditTarget(null);
-                            setCommentActionError(null);
+                            if (
+                              activeReplyTarget?.consultationId ===
+                                consultation.id &&
+                              activeReplyTarget.parentId === null
+                            ) {
+                              setActiveReplyTarget(null);
+                              setReplyContent("");
+                            } else {
+                              setActiveReplyTarget({
+                                consultationId: consultation.id,
+                                parentId: null,
+                              });
+                              setReplyContent("");
+                              setActiveEditTarget(null);
+                              setCommentActionError(null);
+                            }
                           }}
                           className="text-xs font-medium text-sky-600 hover:text-sky-700"
                         >
@@ -647,36 +672,23 @@ export const DetailInspectionPage = () => {
 
                       {activeReplyTarget?.consultationId === consultation.id &&
                         activeReplyTarget.parentId === null && (
-                          <div className="mt-2 rounded-lg border border-violet-100 bg-white p-3">
-                            <textarea
+                          <div className="mt-2 flex items-center gap-2">
+                            <input
                               value={replyContent}
                               onChange={(event) =>
                                 setReplyContent(event.target.value)
                               }
-                              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400"
-                              rows={3}
-                              placeholder="Введите комментарий"
+                              className="h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-sky-400"
+                              placeholder="Введите текст комментария"
                             />
-                            <div className="mt-2 flex items-center justify-end gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveReplyTarget(null);
-                                  setReplyContent("");
-                                }}
-                                className="rounded-lg bg-gray-200 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300"
-                              >
-                                Отмена
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleReplySubmit}
-                                disabled={isCommentActionPending}
-                                className="rounded-lg bg-blue-500 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-60"
-                              >
-                                Отправить
-                              </button>
-                            </div>
+                            <button
+                              type="button"
+                              onClick={handleReplySubmit}
+                              disabled={isCommentActionPending}
+                              className="whitespace-nowrap rounded-lg bg-blue-500 px-4 py-2 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-60"
+                            >
+                              Оставить комментарий
+                            </button>
                           </div>
                         )}
                     </div>
@@ -685,34 +697,40 @@ export const DetailInspectionPage = () => {
               </SectionCard>
             ))}
 
-            <SectionCard title="Диагнозы" className="text-sm text-gray-700" headerClassName="mb-2">
+            <SectionCard
+              title="Диагнозы"
+              className="text-sm text-gray-700"
+              headerClassName="mb-2"
+            >
               {data.diagnoses.length === 0 && <div>-</div>}
               {data.diagnoses.map((diagnosis) => (
                 <div key={diagnosis.id} className="mb-3">
                   <div className="font-bold text-gray-900">
-                    {diagnosis.name || "-"}
-                  </div>
-                  <div className="mt-1 text-gray-500/90">
-                    Тип: {diagnosis.code || "-"}
-                  </div>
-                  <div className="text-gray-500/90">
-                    Тип в осмотре: {diagnosis.type || "-"}
+                    {diagnosis.code
+                      ? `(${diagnosis.code}) ${diagnosis.name || "-"}`
+                      : diagnosis.name || "-"}
                   </div>
                   <div className="text-gray-500/90">
-                    Расшифровка: {diagnosis.description || "-"}
+                    Тип в осмотре: {getDiagnosisTypeLabel(diagnosis.type)}
+                  </div>
+                  <div className="text-gray-500/90">
+                    Описание: {diagnosis.description || "-"}
                   </div>
                 </div>
               ))}
             </SectionCard>
 
-            <SectionCard title="Рекомендации по лечению" className="text-sm text-gray-700">
+            <SectionCard
+              title="Рекомендации по лечению"
+              className="text-sm text-gray-700"
+            >
               <div className="space-y-1">
                 <div>{data.treatment || "-"}</div>
                 <div>
                   {data.nextVisitDate
-                    ? `Следующий визит: ${formatDateTime(data.nextVisitDate)}`
+                    ? `Следующий визит: ${formatDateTimeShort(data.nextVisitDate)}`
                     : data.deathDate
-                      ? `Дата смерти: ${formatDateTime(data.deathDate)}`
+                      ? `Дата смерти: ${formatDateTimeShort(data.deathDate)}`
                       : "-"}
                 </div>
               </div>
@@ -730,198 +748,28 @@ export const DetailInspectionPage = () => {
           </div>
         )}
 
-        {isEditModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
-            <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
-              <div className="text-2xl font-semibold text-gray-800">
-                Редактирование Осмотра
-              </div>
-
-              <div className="mt-4 space-y-4">
-                <SectionCard title="Жалобы">
-                  <textarea
-                    value={form.complaints}
-                    onChange={(event) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        complaints: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                    rows={3}
-                  />
-                </SectionCard>
-
-                <SectionCard title="Анамнез заболевания">
-                  <textarea
-                    value={form.anamnesis}
-                    onChange={(event) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        anamnesis: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                    rows={3}
-                  />
-                </SectionCard>
-
-                <SectionCard title="Рекомендации по лечению">
-                  <textarea
-                    value={form.treatment}
-                    onChange={(event) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        treatment: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                    rows={3}
-                  />
-                </SectionCard>
-
-                <SectionCard title="Диагнозы">
-                  <div className="mt-2 text-sm font-medium text-gray-700">
-                    Болезни
-                  </div>
-                  <input
-                    value={diseaseSearch}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setDiseaseSearch(value);
-                      const selected = diseaseOptions.find(
-                        (option) =>
-                          option.name === value ||
-                          option.code === value ||
-                          `${option.code} - ${option.name}` === value,
-                      );
-                      setSelectedDiseaseId(selected?.id ?? "");
-                    }}
-                    placeholder="Название диагноза"
-                    list="icd10-diagnoses"
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                  />
-                  <datalist id="icd10-diagnoses">
-                    {diseaseOptions.map((option) => (
-                      <option key={option.id} value={option.name}>
-                        {option.code} - {option.name}
-                      </option>
-                    ))}
-                  </datalist>
-
-                  <input
-                    value={selectedDiseaseDescription}
-                    onChange={(event) =>
-                      setSelectedDiseaseDescription(event.target.value)
-                    }
-                    placeholder="Описание"
-                    className="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                  />
-
-                  <div className="mt-3 text-sm font-medium text-gray-700">
-                    Тип диагноза в осмотре
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-4 text-sm text-gray-700">
-                    {[
-                      { value: "Main", label: "Основной" },
-                      { value: "Concomitant", label: "Сопутствующий" },
-                      { value: "Complication", label: "Осложнение" },
-                    ].map((item) => (
-                      <label
-                        key={item.value}
-                        className="flex items-center gap-2"
-                      >
-                        <input
-                          type="radio"
-                          name="diagnosisType"
-                          value={item.value}
-                          checked={selectedDiagnosisType === item.value}
-                          onChange={() =>
-                            setSelectedDiagnosisType(
-                              item.value as UpdateInspectionDiagnosisDto["type"],
-                            )
-                          }
-                        />
-                        <span>{item.label}</span>
-                      </label>
-                    ))}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={addDiagnosis}
-                    className="mt-3 rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-600"
-                  >
-                    +Добавить диагноз
-                  </button>
-                </SectionCard>
-
-                <SectionCard title="Заключение">
-                  <div className="mt-2 grid gap-4 md:grid-cols-2">
-                    <div>
-                      <div className="text-sm text-gray-500">Заключение</div>
-                      <select
-                        value={form.conclusion}
-                        onChange={(event) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            conclusion: event.target
-                              .value as UpdateInspectionDto["conclusion"],
-                          }))
-                        }
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                      >
-                        <option value="Disease">Болезнь</option>
-                        <option value="Recovery">Выздоровление</option>
-                        <option value="Death">Смерть</option>
-                      </select>
-                    </div>
-                    <div>
-                      <div className="text-sm text-gray-500">
-                        Дата следующего визита
-                      </div>
-                      <input
-                        type="datetime-local"
-                        value={form.nextVisitDate}
-                        onChange={(event) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            nextVisitDate: event.target.value,
-                          }))
-                        }
-                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                      />
-                    </div>
-                  </div>
-                </SectionCard>
-              </div>
-
-              {saveError && (
-                <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
-                  {saveError}
-                </div>
-              )}
-
-              <div className="mt-6 flex items-center justify-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="rounded-lg bg-blue-500 px-6 py-2 text-sm font-medium text-white transition hover:bg-sky-600 disabled:opacity-60"
-                >
-                  {isSaving ? "Сохранение..." : "Сохранить изменения"}
-                </button>
-                <button
-                  type="button"
-                  onClick={closeEditModal}
-                  className="rounded-lg bg-gray-200 px-6 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-300"
-                >
-                  Отмена
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <EditInspectionModal
+          isOpen={isEditModalOpen}
+          form={form}
+          onFormChange={handleFormChange}
+          diseaseOptions={diseaseOptions}
+          diseaseSearch={diseaseSearch}
+          selectedDiseaseDescription={selectedDiseaseDescription}
+          selectedDiagnosisType={selectedDiagnosisType}
+          editingDiagnosisIndex={editingDiagnosisIndex}
+          onDiseaseSearchChange={handleDiseaseSearchChange}
+          onDiseaseDescriptionChange={setSelectedDiseaseDescription}
+          onDiagnosisTypeChange={setSelectedDiagnosisType}
+          onAddDiagnosis={addDiagnosis}
+          onEditDiagnosis={startDiagnosisEdit}
+          onUpdateDiagnosis={updateDiagnosis}
+          onCancelDiagnosisEdit={resetDiagnosisEditor}
+          onRemoveDiagnosis={removeDiagnosis}
+          saveError={saveError}
+          isSaving={isSaving}
+          onSave={handleSave}
+          onClose={closeEditModal}
+        />
       </div>
     </div>
   );

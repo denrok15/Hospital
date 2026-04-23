@@ -8,16 +8,18 @@ import {
   loadPatient,
   loadPatientInspections,
   loadPatientInspectionsSearch,
-  type CreateInspectionPayload,
-  type Icd10Diagnosis,
-  type Icd10DiagnosisResponse,
-  type Inspection,
-  type InspectionsResponse,
 } from "app/api/patients";
+import { loadSpecialities } from "app/api/user";
 import {
-  loadSpecialities,
-  type SpecialityDictionaryItem,
-} from "app/api/user";
+  formatDate,
+  formatDateTimeShort,
+  getGenderIcon,
+  toIsoOrNull,
+  normalizeInspections,
+  normalizeIcd10Diagnoses,
+  normalizeSpecialities,
+} from "app/utils";
+import type { CreateInspectionPayload } from "@/shared";
 
 const nowLocalDateTime = () => {
   const current = new Date();
@@ -25,81 +27,6 @@ const nowLocalDateTime = () => {
   return `${current.getFullYear()}-${pad(current.getMonth() + 1)}-${pad(
     current.getDate(),
   )}T${pad(current.getHours())}:${pad(current.getMinutes())}`;
-};
-
-const formatDateTimeOption = (value?: string) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("ru-RU", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const formatDate = (value?: string) => {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString("ru-RU");
-};
-
-const getGenderIcon = (value?: string) => {
-  if (value === "Male") return "♂";
-  if (value === "Female") return "♀";
-  return "⚧";
-};
-
-const toIsoOrNull = (value: string) => {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toISOString();
-};
-
-const normalizeInspections = (
-  data: Inspection[] | InspectionsResponse | undefined,
-) => {
-  if (!data) return [] as Inspection[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.inspections)) return data.inspections;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as Inspection[];
-};
-
-const normalizeIcd10Diagnoses = (
-  data: Icd10Diagnosis[] | Icd10DiagnosisResponse | undefined,
-) => {
-  if (!data) return [] as Icd10Diagnosis[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.records)) return data.records;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as Icd10Diagnosis[];
-};
-
-const normalizeSpecialities = (
-  data:
-    | SpecialityDictionaryItem[]
-    | {
-        specialties?: SpecialityDictionaryItem[];
-        specialities?: SpecialityDictionaryItem[];
-        items?: SpecialityDictionaryItem[];
-        data?: SpecialityDictionaryItem[];
-      }
-    | undefined,
-) => {
-  if (!data) return [] as SpecialityDictionaryItem[];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.specialties)) return data.specialties;
-  if (Array.isArray(data.specialities)) return data.specialities;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.data)) return data.data;
-  return [] as SpecialityDictionaryItem[];
 };
 
 type DiagnosisDraft = {
@@ -216,7 +143,8 @@ export const CreateInspectionPage = () => {
   );
 
   const hasDeathInspection = useMemo(
-    () => allInspections.some((inspection) => inspection.conclusion === "Death"),
+    () =>
+      allInspections.some((inspection) => inspection.conclusion === "Death"),
     [allInspections],
   );
 
@@ -298,9 +226,7 @@ export const CreateInspectionPage = () => {
     }
 
     if (
-      consultations.some(
-        (item) => !item.specialityId || !item.content.trim(),
-      )
+      consultations.some((item) => !item.specialityId || !item.content.trim())
     ) {
       return "Для консультации укажите специальность и комментарий";
     }
@@ -334,7 +260,8 @@ export const CreateInspectionPage = () => {
       conclusion: form.conclusion,
       nextVisitDate:
         form.conclusion === "Disease" ? toIsoOrNull(form.nextVisitDate) : null,
-      deathDate: form.conclusion === "Death" ? toIsoOrNull(form.deathDate) : null,
+      deathDate:
+        form.conclusion === "Death" ? toIsoOrNull(form.deathDate) : null,
       previousInspectionId:
         isRepeatedInspection && form.previousInspectionId
           ? form.previousInspectionId
@@ -388,7 +315,9 @@ export const CreateInspectionPage = () => {
     <div className="min-h-screen bg-white px-4 py-10">
       <div className="mx-auto w-full max-w-[1400px] space-y-4 rounded-2xl bg-transparent p-6">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <h1 className="text-4xl font-semibold text-gray-800">Создание осмотра</h1>
+          <h1 className="text-4xl font-semibold text-gray-800">
+            Создание осмотра
+          </h1>
           <button
             type="button"
             className="rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-300"
@@ -405,7 +334,9 @@ export const CreateInspectionPage = () => {
                 <div className="flex items-center gap-2 text-xl font-semibold text-sky-700">
                   <span>{patientData.name || "-"}</span>
                   <span
-                    title={patientData.gender === "Male" ? "Мужской" : "Женский"}
+                    title={
+                      patientData.gender === "Male" ? "Мужской" : "Женский"
+                    }
                     className="text-2xl leading-none"
                   >
                     {getGenderIcon(patientData.gender)}
@@ -427,7 +358,10 @@ export const CreateInspectionPage = () => {
                       const checked = event.target.checked;
                       setIsRepeatedInspection(checked);
                       if (!checked) {
-                        setForm((prev) => ({ ...prev, previousInspectionId: "" }));
+                        setForm((prev) => ({
+                          ...prev,
+                          previousInspectionId: "",
+                        }));
                       }
                     }}
                   />
@@ -439,7 +373,9 @@ export const CreateInspectionPage = () => {
 
               {isRepeatedInspection && (
                 <label className="block">
-                  <span className="mb-1 block text-gray-500">Предыдущий осмотр</span>
+                  <span className="mb-1 block text-gray-500">
+                    Предыдущий осмотр
+                  </span>
                   <select
                     value={form.previousInspectionId}
                     onChange={(event) =>
@@ -453,7 +389,7 @@ export const CreateInspectionPage = () => {
                     <option value="">Не выбрано</option>
                     {previousInspections.map((inspection) => (
                       <option key={inspection.id} value={inspection.id}>
-                        {`${formatDateTimeOption(inspection.date)} ${
+                        {`${formatDateTimeShort(inspection.date)} ${
                           inspection.diagnosis?.code ?? ""
                         }${inspection.diagnosis?.code ? " - " : ""}${
                           inspection.diagnosis?.name ?? ""
@@ -492,7 +428,10 @@ export const CreateInspectionPage = () => {
           />
         </SectionCard>
 
-        <SectionCard title="Анамнез заболевания" className="text-sm text-gray-700">
+        <SectionCard
+          title="Анамнез заболевания"
+          className="text-sm text-gray-700"
+        >
           <textarea
             value={form.anamnesis}
             onChange={(event) =>
@@ -509,8 +448,11 @@ export const CreateInspectionPage = () => {
           className="text-sm text-gray-700"
           headerClassName="mb-3"
         >
-          <div className="mb-3 flex items-center gap-3">
-              <span className="text-sm text-gray-700">Требуется консультация</span>
+          <div className="mb-3 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-700">
+                Требуется консультация
+              </span>
               <label className="relative inline-flex h-6 w-11 items-center">
                 <input
                   type="checkbox"
@@ -531,19 +473,43 @@ export const CreateInspectionPage = () => {
                 <span className="h-6 w-11 rounded-full bg-gray-200 transition peer-checked:bg-sky-500" />
                 <span className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition peer-checked:translate-x-5" />
               </label>
+            </div>
+            {isConsultationRequired && consultations.length > 0 && (
+              <label className="block w-full max-w-md">
+                <span className="mb-1 block text-gray-500">Специализация</span>
+                <select
+                  value={consultations[0].specialityId}
+                  onChange={(event) =>
+                    setConsultations((prev) =>
+                      prev.map((item, index) =>
+                        index === 0
+                          ? { ...item, specialityId: event.target.value }
+                          : item,
+                      ),
+                    )
+                  }
+                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
+                >
+                  <option value="">Выберите специальность</option>
+                  {specialityOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
 
           {isConsultationRequired && (
             <div className="space-y-3">
               {consultations.map((consultation, index) => (
-              <div
-                key={consultation.key}
-                className="rounded-lg border border-gray-200 bg-white p-3"
-              >
-                <div className="grid gap-3">
-                  {index === 0 ? (
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div />
+                <div
+                  key={consultation.key}
+                  className="rounded-lg border border-gray-200 bg-white p-3"
+                >
+                  <div className="grid gap-3">
+                    {index === 0 ? null : (
                       <label className="block">
                         <span className="mb-1 block text-gray-500">
                           Специализация
@@ -554,7 +520,10 @@ export const CreateInspectionPage = () => {
                             setConsultations((prev) =>
                               prev.map((item) =>
                                 item.key === consultation.key
-                                  ? { ...item, specialityId: event.target.value }
+                                  ? {
+                                      ...item,
+                                      specialityId: event.target.value,
+                                    }
                                   : item,
                               ),
                             )
@@ -569,67 +538,42 @@ export const CreateInspectionPage = () => {
                           ))}
                         </select>
                       </label>
-                    </div>
-                  ) : (
+                    )}
+
                     <label className="block">
-                      <span className="mb-1 block text-gray-500">Специализация</span>
-                      <select
-                        value={consultation.specialityId}
+                      <span className="mb-1 block text-gray-500">
+                        Комментарий к консультации
+                      </span>
+                      <textarea
+                        value={consultation.content}
                         onChange={(event) =>
                           setConsultations((prev) =>
                             prev.map((item) =>
                               item.key === consultation.key
-                                ? { ...item, specialityId: event.target.value }
+                                ? { ...item, content: event.target.value }
                                 : item,
                             ),
                           )
                         }
+                        rows={4}
                         className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                      >
-                        <option value="">Выберите специальность</option>
-                        {specialityOptions.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="Опишите проблему для консультанта"
+                      />
                     </label>
-                  )}
 
-                  <label className="block">
-                    <span className="mb-1 block text-gray-500">
-                      Комментарий к консультации
-                    </span>
-                    <textarea
-                      value={consultation.content}
-                      onChange={(event) =>
+                    <button
+                      type="button"
+                      className="w-fit rounded-lg bg-gray-200 px-3 py-2 text-sm text-gray-700 transition hover:bg-gray-300"
+                      onClick={() =>
                         setConsultations((prev) =>
-                          prev.map((item) =>
-                            item.key === consultation.key
-                              ? { ...item, content: event.target.value }
-                              : item,
-                          ),
+                          prev.filter((item) => item.key !== consultation.key),
                         )
                       }
-                      rows={4}
-                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
-                      placeholder="Опишите проблему для консультанта"
-                    />
-                  </label>
-
-                  <button
-                    type="button"
-                    className="w-fit rounded-lg bg-gray-200 px-3 py-2 text-sm text-gray-700 transition hover:bg-gray-300"
-                    onClick={() =>
-                      setConsultations((prev) =>
-                        prev.filter((item) => item.key !== consultation.key),
-                      )
-                    }
-                  >
-                    Удалить консультацию
-                  </button>
+                    >
+                      Удалить консультацию
+                    </button>
+                  </div>
                 </div>
-              </div>
               ))}
 
               <button
@@ -649,7 +593,6 @@ export const CreateInspectionPage = () => {
           className="text-sm text-gray-700"
           headerClassName="mb-3"
         >
-
           <div className="space-y-3">
             {diagnoses.map((diagnosis, index) => (
               <div
@@ -667,7 +610,8 @@ export const CreateInspectionPage = () => {
                       onChange={(event) => {
                         const searchValue = event.target.value;
                         const matched = diagnosesDictionary.find(
-                          (item) => `${item.code} - ${item.name}` === searchValue,
+                          (item) =>
+                            `${item.code} - ${item.name}` === searchValue,
                         );
                         setDiagnoses((prev) =>
                           prev.map((item) =>
@@ -686,7 +630,10 @@ export const CreateInspectionPage = () => {
                     />
                     <datalist id="create-inspection-icd10">
                       {diagnosesDictionary.map((item) => (
-                        <option key={item.id} value={`${item.code} - ${item.name}`} />
+                        <option
+                          key={item.id}
+                          value={`${item.code} - ${item.name}`}
+                        />
                       ))}
                     </datalist>
                   </label>
@@ -710,14 +657,19 @@ export const CreateInspectionPage = () => {
                   </label>
 
                   <div className="md:col-span-2">
-                    <div className="mb-2 text-gray-500">Тип диагноза в осмотре</div>
+                    <div className="mb-2 text-gray-500">
+                      Тип диагноза в осмотре
+                    </div>
                     <div className="flex flex-wrap gap-4">
                       {[
                         { value: "Main", label: "Основной" },
                         { value: "Concomitant", label: "Сопутствующий" },
                         { value: "Complication", label: "Осложнение" },
                       ].map((option) => (
-                        <label key={option.value} className="flex items-center gap-2">
+                        <label
+                          key={option.value}
+                          className="flex items-center gap-2"
+                        >
                           <input
                             type="radio"
                             name={`diagnosis-type-${diagnosis.key}`}
@@ -756,7 +708,9 @@ export const CreateInspectionPage = () => {
                   )}
                 </div>
 
-                <div className="mt-2 text-xs text-gray-400">Диагноз #{index + 1}</div>
+                <div className="mt-2 text-xs text-gray-400">
+                  Диагноз #{index + 1}
+                </div>
               </div>
             ))}
           </div>
@@ -820,7 +774,9 @@ export const CreateInspectionPage = () => {
 
             {form.conclusion === "Disease" && (
               <label className="block">
-                <span className="mb-1 block text-gray-500">Дата следующего визита</span>
+                <span className="mb-1 block text-gray-500">
+                  Дата следующего визита
+                </span>
                 <input
                   type="datetime-local"
                   value={form.nextVisitDate}
@@ -842,7 +798,10 @@ export const CreateInspectionPage = () => {
                   type="datetime-local"
                   value={form.deathDate}
                   onChange={(event) =>
-                    setForm((prev) => ({ ...prev, deathDate: event.target.value }))
+                    setForm((prev) => ({
+                      ...prev,
+                      deathDate: event.target.value,
+                    }))
                   }
                   className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 outline-none focus:border-sky-400"
                 />

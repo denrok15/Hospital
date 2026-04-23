@@ -21,4 +21,13 @@ interface UserProfile {
   email: string;
   phone: string;
 }
-export { type UserProfile, type LoginDto, type RegisterDto };
+interface SpecialityDictionaryItem {
+  id?: string;
+  name: string;
+}
+export {
+  type UserProfile,
+  type LoginDto,
+  type RegisterDto,
+  type SpecialityDictionaryItem,
+};

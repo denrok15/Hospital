@@ -1,27 +1,5 @@
 import { http } from "app/utils";
-
-export type IcdRootsReportFilters = {
-  start: string;
-  end: string;
-  icdRoots?: string[];
-};
-
-export type IcdRootsReportRecord = {
-  patientName: string;
-  patientBirthdate: string;
-  gender: "Male" | "Female" | string;
-  visitsByRoot: Record<string, number>;
-};
-
-export type IcdRootsReportResponse = {
-  filters: {
-    start: string;
-    end: string;
-    icdRoots: string[];
-  };
-  records: IcdRootsReportRecord[];
-  summaryByRoot: Record<string, number>;
-};
+import type { IcdRootsReportFilters, IcdRootsReportResponse } from "app/shared";
 
 const buildReportQuery = (filters: IcdRootsReportFilters) => {
   const searchParams = new URLSearchParams();
